@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-03-19T09:50:48.290Z"
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-03-19T09:58:01.108Z"
 progress:
   total_phases: 8
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -47,6 +47,7 @@ Plan: 2 of 2
 
 *Updated after each plan completion*
 | Phase 01 P01 | 4min | 2 tasks | 12 files |
+| Phase 01 P02 | 4min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -57,6 +58,8 @@ Recent decisions affecting current work:
 
 - Roadmap: 8 phases derived from 36 requirements. Bottom-up by dependency, risk-ordered. Phases 4-6 are parallelizable after Phase 3.
 - [Phase 01]: Used Rust edition 2024 for all crates; firmware/ and references/ excluded from git
+- [Phase 01]: ChecksumType uses serde Serialize/Deserialize for future config persistence
+- [Phase 01]: Protocol family detection prioritizes device name prefix over PID heuristic
 
 ### Pending Todos
 
@@ -69,6 +72,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-19T09:50:48.288Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-03-19T09:58:01.106Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
