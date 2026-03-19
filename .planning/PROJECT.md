@@ -12,13 +12,14 @@ The MonsGeek configurator must work on Linux — enabling the user to configure,
 
 ### Validated
 
-(None yet — ship to validate)
+- [x] Extensible device registry for adding other yc3121-based MonsGeek keyboards — *Validated in Phase 01: project-scaffolding-device-registry*
+- [x] Full FEA command protocol constants and checksum algorithms — *Validated in Phase 01: project-scaffolding-device-registry*
 
 ### Active
 
 - [ ] gRPC-Web bridge server that serves HID commands on localhost:3814, allowing the MonsGeek web/Electron configurator to communicate with the keyboard
 - [ ] HID device detection and enumeration for yc3121-based keyboards (VID 0x3141)
-- [ ] Full FEA command protocol implementation (send/receive with Bit7 checksums)
+- [ ] Full FEA command protocol implementation (send/receive with Bit7 checksums) — constants and checksums done; encoding/transport pending
 - [ ] Key remapping via SET/GET_KEYMATRIX commands
 - [ ] RGB/LED control via SET/GET_LEDPARAM commands
 - [ ] Macro programming via SET/GET_MACRO commands
@@ -85,4 +86,4 @@ The MonsGeek configurator must work on Linux — enabling the user to configure,
 | eBPF HID driver deferred | Only needed if configurator-based debounce/polling adjustments don't resolve typing issues; reference project shows how to implement if needed | — Pending |
 
 ---
-*Last updated: 2026-03-19 after initialization*
+*Last updated: 2026-03-19 — Phase 01 complete (workspace scaffold, device registry, protocol constants)*
