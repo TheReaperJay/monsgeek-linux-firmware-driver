@@ -9,10 +9,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### HID Transport
 
-- [ ] **HID-01**: Driver detects and enumerates all yc3121-based MonsGeek keyboards (VID 0x3141) connected via USB
+- [x] **HID-01**: Driver detects and enumerates all yc3121-based MonsGeek keyboards (VID 0x3141) connected via USB
 - [x] **HID-02**: Driver sends FEA commands and receives responses using 64-byte HID Feature Reports with Bit7 checksums
-- [ ] **HID-03**: Driver enforces mandatory 100ms inter-command delay to prevent yc3121 firmware crash/stall
-- [ ] **HID-04**: Driver handles Linux hidraw stale read issue via retry-and-match loop (echo byte verification)
+- [x] **HID-03**: Driver enforces mandatory 100ms inter-command delay to prevent yc3121 firmware crash/stall
+- [x] **HID-04**: Driver handles Linux hidraw stale read issue via retry-and-match loop (echo byte verification)
 - [x] **HID-05**: Driver validates all write indices against key matrix bounds before sending to prevent firmware OOB corruption
 - [x] **HID-06**: udev rules enable non-root HID access for yc3121 keyboards on Linux
 
@@ -111,10 +111,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | REG-01 | Phase 1 | Complete |
 | REG-02 | Phase 1 | Complete |
-| HID-01 | Phase 2 | Pending |
+| HID-01 | Phase 2 | Complete |
 | HID-02 | Phase 2 | Complete |
-| HID-03 | Phase 2 | Pending |
-| HID-04 | Phase 2 | Pending |
+| HID-03 | Phase 2 | Complete |
+| HID-04 | Phase 2 | Complete |
 | HID-05 | Phase 2 | Complete |
 | HID-06 | Phase 2 | Complete |
 | GRPC-01 | Phase 3 | Pending |
