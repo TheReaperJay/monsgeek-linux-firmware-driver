@@ -70,8 +70,8 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Device Registry
 
-- [ ] **REG-01**: Device registry contains M5W definition (VID 0x3141, PID 0x4005, key matrix Common108_MG108B, device ID 1308)
-- [ ] **REG-02**: Device registry is extensible — adding a new yc3121 keyboard requires only a JSON definition file
+- [x] **REG-01**: Device registry contains M5W definition (VID 0x3141, PID 0x4005, key matrix Common108_MG108B, device ID 1308)
+- [x] **REG-02**: Device registry is extensible — adding a new yc3121 keyboard requires only a JSON definition file
 
 ## v2 Requirements
 
@@ -109,8 +109,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REG-01 | Phase 1 | Pending |
-| REG-02 | Phase 1 | Pending |
+| REG-01 | Phase 1 | Complete |
+| REG-02 | Phase 1 | Complete |
 | HID-01 | Phase 2 | Pending |
 | HID-02 | Phase 2 | Pending |
 | HID-03 | Phase 2 | Pending |
