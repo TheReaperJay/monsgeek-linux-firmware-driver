@@ -109,48 +109,48 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HID-01 | — | Pending |
-| HID-02 | — | Pending |
-| HID-03 | — | Pending |
-| HID-04 | — | Pending |
-| HID-05 | — | Pending |
-| HID-06 | — | Pending |
-| GRPC-01 | — | Pending |
-| GRPC-02 | — | Pending |
-| GRPC-03 | — | Pending |
-| GRPC-04 | — | Pending |
-| GRPC-05 | — | Pending |
-| GRPC-06 | — | Pending |
-| GRPC-07 | — | Pending |
-| GRPC-08 | — | Pending |
-| GRPC-09 | — | Pending |
-| KEYS-01 | — | Pending |
-| KEYS-02 | — | Pending |
-| KEYS-03 | — | Pending |
-| LED-01 | — | Pending |
-| LED-02 | — | Pending |
-| TUNE-01 | — | Pending |
-| TUNE-02 | — | Pending |
-| MACR-01 | — | Pending |
-| MACR-02 | — | Pending |
-| MAG-01 | — | Pending |
-| MAG-02 | — | Pending |
-| MAG-03 | — | Pending |
-| MAG-04 | — | Pending |
-| FW-01 | — | Pending |
-| FW-02 | — | Pending |
-| FW-03 | — | Pending |
-| FW-04 | — | Pending |
-| CLI-01 | — | Pending |
-| CLI-02 | — | Pending |
-| REG-01 | — | Pending |
-| REG-02 | — | Pending |
+| REG-01 | Phase 1 | Pending |
+| REG-02 | Phase 1 | Pending |
+| HID-01 | Phase 2 | Pending |
+| HID-02 | Phase 2 | Pending |
+| HID-03 | Phase 2 | Pending |
+| HID-04 | Phase 2 | Pending |
+| HID-05 | Phase 2 | Pending |
+| HID-06 | Phase 2 | Pending |
+| GRPC-01 | Phase 3 | Pending |
+| GRPC-02 | Phase 3 | Pending |
+| GRPC-03 | Phase 3 | Pending |
+| GRPC-04 | Phase 3 | Pending |
+| GRPC-05 | Phase 3 | Pending |
+| GRPC-06 | Phase 3 | Pending |
+| GRPC-07 | Phase 3 | Pending |
+| GRPC-08 | Phase 3 | Pending |
+| KEYS-01 | Phase 4 | Pending |
+| KEYS-02 | Phase 4 | Pending |
+| KEYS-03 | Phase 4 | Pending |
+| LED-01 | Phase 5 | Pending |
+| LED-02 | Phase 5 | Pending |
+| TUNE-01 | Phase 5 | Pending |
+| TUNE-02 | Phase 5 | Pending |
+| MACR-01 | Phase 6 | Pending |
+| MACR-02 | Phase 6 | Pending |
+| MAG-01 | Phase 6 | Pending |
+| MAG-02 | Phase 6 | Pending |
+| MAG-03 | Phase 6 | Pending |
+| MAG-04 | Phase 6 | Pending |
+| CLI-01 | Phase 7 | Pending |
+| CLI-02 | Phase 7 | Pending |
+| GRPC-09 | Phase 7 | Pending |
+| FW-01 | Phase 8 | Pending |
+| FW-02 | Phase 8 | Pending |
+| FW-03 | Phase 8 | Pending |
+| FW-04 | Phase 8 | Pending |
 
 **Coverage:**
 - v1 requirements: 36 total
-- Mapped to phases: 0
-- Unmapped: 36
+- Mapped to phases: 36
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-19*
-*Last updated: 2026-03-19 after initial definition*
+*Last updated: 2026-03-19 after roadmap creation*
