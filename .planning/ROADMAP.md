@@ -28,15 +28,15 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Depends on**: Nothing (first phase)
 **Requirements**: REG-01, REG-02
 **Success Criteria** (what must be TRUE):
-  1. Cargo workspace compiles with three crates (monsgeek-transport, monsgeek-keyboard, monsgeek-driver) and all dependencies resolve
+  1. Cargo workspace compiles with three crates (monsgeek-protocol, monsgeek-transport, monsgeek-driver) and all dependencies resolve
   2. M5W device definition is loadable from JSON and contains correct VID (0x3141), PID (0x4005), device ID (1308), and key matrix identifier (Common108_MG108B)
   3. A new yc3121 keyboard can be added by creating a JSON file without modifying any Rust source code
   4. FEA command constants and protocol types (command opcodes, report structure, Bit7 checksum) are defined and unit-tested
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md — Workspace scaffolding, device types, M5W JSON definition, and device registry
+- [ ] 01-02-PLAN.md — FEA protocol constants, checksum algorithms, and protocol family detection
 
 ### Phase 2: FEA Protocol & HID Transport
 **Goal**: Reliable, safe HID communication with yc3121 keyboards that handles all known hardware quirks
@@ -154,7 +154,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Project Scaffolding & Device Registry | 0/2 | Not started | - |
+| 1. Project Scaffolding & Device Registry | 0/2 | Planning complete | - |
 | 2. FEA Protocol & HID Transport | 0/3 | Not started | - |
 | 3. gRPC-Web Bridge | 0/3 | Not started | - |
 | 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
