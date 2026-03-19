@@ -48,12 +48,12 @@ Plans:
   3. Commands sent faster than 100ms apart are automatically throttled by the transport layer (no firmware crash on rapid command sequences)
   4. SET followed by GET for the same parameter returns the updated value (stale-read retry logic works)
   5. Running the driver as a non-root user with udev rules installed successfully opens the HID device
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md — Transport error types, USB session with rusb control transfers, key matrix bounds validation, and udev rules
+- [ ] 02-02-PLAN.md — Flow control with echo matching, device discovery, transport thread with command channel and hot-plug detection
+- [ ] 02-03-PLAN.md — Hardware integration tests and human verification on real M5W keyboard
 
 ### Phase 3: gRPC-Web Bridge
 **Goal**: MonsGeek web configurator at app.monsgeek.com can connect to the locally running bridge and see the keyboard
@@ -154,8 +154,8 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Project Scaffolding & Device Registry | 0/2 | Planning complete | - |
-| 2. FEA Protocol & HID Transport | 0/3 | Not started | - |
+| 1. Project Scaffolding & Device Registry | 2/2 | Complete | 2026-03-19 |
+| 2. FEA Protocol & HID Transport | 0/3 | Planning complete | - |
 | 3. gRPC-Web Bridge | 0/3 | Not started | - |
 | 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
 | 5. LED Control & Tuning | 0/2 | Not started | - |
