@@ -101,3 +101,135 @@ impl Default for DeviceRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn devices_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("devices")
+    }
+
+    #[test]
+    fn test_load_m5w_from_devices_dir() {
+        let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
+        assert_eq!(registry.len(), 1);
+
+        let device = registry.find_by_id(1308).expect("M5W not found by ID");
+        assert_eq!(device.display_name, "M5W");
+    }
+
+    #[test]
+    fn test_find_by_vid_pid_m5w() {
+        let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
+        let matches = registry.find_by_vid_pid(0x3141, 0x4005);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, 1308);
+    }
+
+    #[test]
+    fn test_find_by_vid_pid_no_match() {
+        let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
+        let matches = registry.find_by_vid_pid(0xFFFF, 0xFFFF);
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_find_by_id_no_match() {
+        let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
+        assert!(registry.find_by_id(9999).is_none());
+    }
+
+    #[test]
+    fn test_registry_extensible() {
+        let tmp = std::env::temp_dir().join("monsgeek_registry_test_extensible");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Copy M5W
+        fs::write(
+            tmp.join("m5w.json"),
+            include_str!("../devices/m5w.json"),
+        )
+        .unwrap();
+
+        // Add a fictional second device
+        fs::write(
+            tmp.join("test_device.json"),
+            r#"{
+                "id": 9999,
+                "vid": 12609,
+                "pid": 16390,
+                "name": "yc3121_test",
+                "displayName": "Test Device"
+            }"#,
+        )
+        .unwrap();
+
+        let registry = DeviceRegistry::load_from_directory(&tmp).unwrap();
+        assert_eq!(registry.len(), 2);
+        assert!(registry.find_by_id(1308).is_some());
+        assert!(registry.find_by_id(9999).is_some());
+        assert_eq!(
+            registry.find_by_id(9999).unwrap().display_name,
+            "Test Device"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_empty_directory() {
+        let tmp = std::env::temp_dir().join("monsgeek_registry_test_empty");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let registry = DeviceRegistry::load_from_directory(&tmp).unwrap();
+        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_shared_vid_pid() {
+        let tmp = std::env::temp_dir().join("monsgeek_registry_test_shared_vid_pid");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // Two devices sharing the same VID/PID but different IDs
+        fs::write(
+            tmp.join("device_a.json"),
+            r#"{"id": 100, "vid": 12609, "pid": 16389, "name": "dev_a", "displayName": "Device A"}"#,
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("device_b.json"),
+            r#"{"id": 200, "vid": 12609, "pid": 16389, "name": "dev_b", "displayName": "Device B"}"#,
+        )
+        .unwrap();
+
+        let registry = DeviceRegistry::load_from_directory(&tmp).unwrap();
+        assert_eq!(registry.len(), 2);
+
+        let matches = registry.find_by_vid_pid(0x3141, 0x4005);
+        assert_eq!(matches.len(), 2);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_invalid_json_returns_error() {
+        let tmp = std::env::temp_dir().join("monsgeek_registry_test_invalid_json");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        fs::write(tmp.join("bad.json"), "{ not valid json }").unwrap();
+
+        let result = DeviceRegistry::load_from_directory(&tmp);
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+}
