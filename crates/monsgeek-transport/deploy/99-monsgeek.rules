@@ -1,0 +1,21 @@
+# MonsGeek yc3121 keyboard udev rules for Linux
+#
+# Install: sudo cp 99-monsgeek.rules /etc/udev/rules.d/
+# Reload: sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Purpose:
+# 1. Grant non-root USB access for MonsGeek keyboards (VID 0x3141)
+# 2. Unbind usbhid from IF2 (vendor interface) to prevent firmware STALL
+#
+# The yc3121 firmware STALLs on HID report descriptor reads for IF1/IF2,
+# causing 25-second timeouts and potentially resetting the USB port.
+# Unbinding usbhid from IF2 prevents the STALL while keeping IF0
+# (standard keyboard) functional under hid-generic.
+
+# Grant non-root USB access for MonsGeek VID via libusb
+SUBSYSTEM=="usb", ATTRS{idVendor}=="3141", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# Unbind usbhid from IF2 (vendor HID interface) to prevent firmware STALL
+# This fires after usbhid binds to the interface, then immediately unbinds it.
+# IF0 (keyboard) remains bound to hid-generic and works normally.
+ACTION=="add", SUBSYSTEM=="usb", DRIVER=="usbhid", ATTRS{idVendor}=="3141", ATTRS{idProduct}=="4005", ATTR{bInterfaceNumber}=="02", RUN+="/bin/sh -c 'echo -n %k > /sys/bus/usb/drivers/usbhid/unbind'"

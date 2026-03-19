@@ -7,6 +7,6 @@ pub mod bounds;
 pub mod error;
 pub mod usb;
 
-pub use bounds::validate_key_index;
+pub use bounds::{validate_key_index, validate_write_request};
 pub use error::TransportError;
 pub use usb::UsbSession;
