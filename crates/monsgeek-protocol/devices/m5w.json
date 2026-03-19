@@ -1,0 +1,19 @@
+{
+  "id": 1308,
+  "vid": 12609,
+  "pid": 16389,
+  "name": "yc3121_m5w_soc",
+  "displayName": "M5W",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": ["usb"],
+  "keyCount": 108,
+  "keyLayoutName": "Common108_MG108B",
+  "layer": 4,
+  "fnSysLayer": {"win": 2, "mac": 2},
+  "noMagneticSwitch": true,
+  "hasLightLayout": true,
+  "hasSideLight": false,
+  "hotSwap": false,
+  "chipFamily": "YC3121"
+}

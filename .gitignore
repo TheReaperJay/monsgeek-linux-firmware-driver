@@ -1,0 +1,8 @@
+/target
+*.swp
+*.swo
+.DS_Store
+
+# Reference data -- not project deliverables
+/firmware/
+/references/

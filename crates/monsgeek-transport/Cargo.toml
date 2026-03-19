@@ -1,0 +1,7 @@
+[package]
+name = "monsgeek-transport"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monsgeek-protocol = { path = "../monsgeek-protocol" }
