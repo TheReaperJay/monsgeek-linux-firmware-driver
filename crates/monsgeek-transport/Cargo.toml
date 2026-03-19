@@ -5,3 +5,10 @@ edition = "2024"
 
 [dependencies]
 monsgeek-protocol = { path = "../monsgeek-protocol" }
+rusb = "0.9"
+thiserror = "2.0"
+log = "0.4"
+crossbeam-channel = "0.5"
+
+[features]
+hardware = []
