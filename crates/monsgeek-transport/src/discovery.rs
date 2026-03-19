@@ -1,9 +1,87 @@
 //! Device discovery for MonsGeek keyboards via USB enumeration.
 //!
 //! Enumerates connected USB devices and matches them against the `DeviceRegistry`
-//! to identify supported keyboards.
+//! to identify supported keyboards. Each matched device produces a `DeviceInfo`
+//! with VID, PID, device ID, display name, internal name, and USB bus location.
 
-// Placeholder — tests drive implementation.
+use monsgeek_protocol::DeviceRegistry;
+
+use crate::error::TransportError;
+
+/// Information about a discovered MonsGeek keyboard.
+#[derive(Debug, Clone)]
+pub struct DeviceInfo {
+    /// USB Vendor ID (0x3141 for MonsGeek).
+    pub vid: u16,
+    /// USB Product ID.
+    pub pid: u16,
+    /// Device ID from the registry (matches the JSON definition).
+    pub device_id: i32,
+    /// Human-readable display name (e.g., "M5W").
+    pub display_name: String,
+    /// Internal device name (e.g., "yc3121_m5w_soc").
+    pub name: String,
+    /// USB bus number.
+    pub bus: u8,
+    /// USB device address on the bus.
+    pub address: u8,
+}
+
+/// Enumerate connected USB devices and match them against the device registry.
+///
+/// Iterates all USB devices via `rusb::devices()`, checks each device's VID/PID
+/// against the registry, and returns a `DeviceInfo` for every match. A single
+/// physical device may produce multiple entries if the registry maps its VID/PID
+/// to multiple device IDs.
+///
+/// # Errors
+///
+/// Returns `TransportError::Usb` if `rusb::devices()` fails (e.g., no USB access).
+pub fn enumerate_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, TransportError> {
+    let devices = rusb::devices()?;
+    let mut found = Vec::new();
+
+    for device in devices.iter() {
+        let descriptor = match device.device_descriptor() {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let vid = descriptor.vendor_id();
+        let pid = descriptor.product_id();
+
+        let matched = registry.find_by_vid_pid(vid, pid);
+        if matched.is_empty() {
+            continue;
+        }
+
+        let bus = device.bus_number();
+        let address = device.address();
+
+        for definition in matched {
+            log::info!(
+                "Found {} at bus {} addr {} (VID:0x{:04X} PID:0x{:04X})",
+                definition.display_name,
+                bus,
+                address,
+                vid,
+                pid,
+            );
+
+            found.push(DeviceInfo {
+                vid,
+                pid,
+                device_id: definition.id,
+                display_name: definition.display_name.clone(),
+                name: definition.name.clone(),
+                bus,
+                address,
+            });
+        }
+    }
+
+    Ok(found)
+}
 
 #[cfg(test)]
 mod tests {
@@ -63,7 +141,6 @@ mod tests {
 
     #[test]
     fn test_enumerate_devices_exists_with_correct_signature() {
-        // Verify the function signature compiles
         let _fn_ptr: fn(
             &monsgeek_protocol::DeviceRegistry,
         ) -> Result<Vec<DeviceInfo>, crate::error::TransportError> = enumerate_devices;
@@ -71,12 +148,9 @@ mod tests {
 
     #[test]
     fn test_enumerate_devices_with_empty_registry() {
-        // Empty registry should match no devices (even if USB devices exist)
         let registry = monsgeek_protocol::DeviceRegistry::new();
         let result = enumerate_devices(&registry);
-        // Should not error — just return empty or whatever devices match (none)
         assert!(result.is_ok());
-        // With an empty registry, no devices should match
         assert!(result.unwrap().is_empty());
     }
 }
