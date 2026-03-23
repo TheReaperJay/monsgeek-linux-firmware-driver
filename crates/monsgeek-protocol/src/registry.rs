@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_find_by_vid_pid_m5w() {
         let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
-        let matches = registry.find_by_vid_pid(0x3141, 0x4005);
+        let matches = registry.find_by_vid_pid(0x3151, 0x4015);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].id, 1308);
     }

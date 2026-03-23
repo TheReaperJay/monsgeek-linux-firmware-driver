@@ -9,6 +9,8 @@ rusb = "0.9"
 thiserror = "2.0"
 log = "0.4"
 crossbeam-channel = "0.5"
+udev = "0.9.3"
+libc = "0.2.183"
 
 [features]
 hardware = []

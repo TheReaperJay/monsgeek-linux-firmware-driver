@@ -5,10 +5,10 @@
 //! A separate hot-plug thread monitors USB bus events for MonsGeek device
 //! arrivals and departures.
 
+use std::os::unix::io::AsRawFd;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use rusb::UsbContext;
 
 use monsgeek_protocol::timing;
 use monsgeek_protocol::ChecksumType;
@@ -107,95 +107,133 @@ fn transport_loop(cmd_rx: Receiver<CommandRequest>, session: UsbSession) {
     log::info!("Transport thread shutting down");
 }
 
-/// Hot-plug watcher that sends `TransportEvent`s when MonsGeek devices
-/// are plugged in or removed.
+/// Spawn a dedicated thread for USB hot-plug event monitoring via udev.
 ///
-/// CRITICAL per RESEARCH Pitfall 5: Do NOT call any `DeviceHandle` methods
-/// (control transfers, descriptor reads beyond `device_descriptor`) inside
-/// these callbacks. Only send notification events via channel.
-struct HotplugWatcher {
-    event_tx: Sender<TransportEvent>,
-}
-
-impl<T: UsbContext> rusb::Hotplug<T> for HotplugWatcher {
-    fn device_arrived(&mut self, device: rusb::Device<T>) {
-        if let Ok(desc) = device.device_descriptor() {
-            if desc.vendor_id() == 0x3141 {
-                let _ = self.event_tx.send(TransportEvent::DeviceArrived {
-                    vid: desc.vendor_id(),
-                    pid: desc.product_id(),
-                    bus: device.bus_number(),
-                    address: device.address(),
-                });
-            }
-        }
-    }
-
-    fn device_left(&mut self, device: rusb::Device<T>) {
-        let _ = self.event_tx.send(TransportEvent::DeviceLeft {
-            bus: device.bus_number(),
-            address: device.address(),
-        });
-    }
-}
-
-/// Spawn a dedicated thread for USB hot-plug event monitoring.
+/// Monitors the `usb` subsystem for add/remove events matching the given VID.
+/// Uses udev (not libusb hotplug) because libusb hotplug does not reliably
+/// fire arrival events on Linux (departure only — verified empirically).
 ///
-/// Returns `Some(JoinHandle)` if the platform supports hot-plug (Linux with
-/// libusb >= 1.0.16). Returns `None` if not supported (e.g., macOS without
-/// libusb hot-plug support).
-///
-/// The thread calls `context.handle_events()` in a loop, which dispatches
-/// to the `HotplugWatcher` callbacks. It runs until the process exits or
-/// the `Registration` is dropped (which happens when the context goes out
-/// of scope inside the thread — in practice, this thread lives for the
-/// program's lifetime).
+/// The thread uses `poll()` with a 1-second timeout so it doesn't spin.
 pub(crate) fn spawn_hotplug_thread(
     event_tx: Sender<TransportEvent>,
+    vid: u16,
 ) -> Option<std::thread::JoinHandle<()>> {
-    if !rusb::has_hotplug() {
-        log::warn!("Hot-plug not supported on this platform");
-        return None;
-    }
-
     let handle = std::thread::Builder::new()
         .name("monsgeek-hotplug".into())
         .spawn(move || {
-            let context = match rusb::Context::new() {
-                Ok(ctx) => ctx,
+            let builder = match udev::MonitorBuilder::new() {
+                Ok(b) => b,
                 Err(e) => {
-                    log::error!("Failed to create USB context for hot-plug: {}", e);
+                    log::error!("Failed to create udev monitor: {}", e);
                     return;
                 }
             };
 
-            let watcher = Box::new(HotplugWatcher { event_tx });
-            let _registration: rusb::Registration<rusb::Context> = match rusb::HotplugBuilder::new()
-                .vendor_id(0x3141)
-                .enumerate(true)
-                .register(&context, watcher)
-            {
-                Ok(reg) => reg,
+            let builder = match builder.match_subsystem("usb") {
+                Ok(b) => b,
                 Err(e) => {
-                    log::error!("Failed to register hot-plug callback: {}", e);
+                    log::error!("Failed to set udev subsystem filter: {}", e);
                     return;
                 }
             };
 
-            log::info!("Hot-plug monitoring started for VID 0x3141");
+            let socket = match builder.listen() {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to start udev monitor: {}", e);
+                    return;
+                }
+            };
 
-            // Event loop — handle_events blocks until an event occurs or timeout.
-            // The Registration must stay alive (not dropped) for callbacks to fire.
+            let fd = socket.as_raw_fd();
+            let vid_str = format!("{:04x}", vid);
+
+            log::info!("Hot-plug monitoring started via udev for VID 0x{}", vid_str);
+
             loop {
-                if let Err(e) = context.handle_events(Some(Duration::from_millis(500))) {
-                    log::error!("Hot-plug handle_events error: {}", e);
-                    break;
+                let mut fds = [libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                }];
+
+                let ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 1000) };
+                if ret <= 0 {
+                    continue;
+                }
+
+                let Some(event) = socket.iter().next() else {
+                    continue;
+                };
+
+                // Filter to our VID by checking the PRODUCT property
+                // (format: "VID/PID/bcdDevice", e.g. "3151/4015/103")
+                let matches_vid = event
+                    .property_value("PRODUCT")
+                    .and_then(|v| v.to_str())
+                    .map(|v| v.starts_with(&vid_str))
+                    .unwrap_or(false);
+
+                if !matches_vid {
+                    continue;
+                }
+
+                match event.event_type() {
+                    udev::EventType::Add => {
+                        let (pid, bus, addr) = extract_device_info(&event, &vid_str);
+                        log::info!("Hot-plug: device arrived VID 0x{} PID 0x{:04X} bus {} addr {}", vid_str, pid, bus, addr);
+                        let _ = event_tx.send(TransportEvent::DeviceArrived {
+                            vid,
+                            pid,
+                            bus,
+                            address: addr,
+                        });
+                    }
+                    udev::EventType::Remove => {
+                        let (_, bus, addr) = extract_device_info(&event, &vid_str);
+                        log::info!("Hot-plug: device removed bus {} addr {}", bus, addr);
+                        let _ = event_tx.send(TransportEvent::DeviceLeft {
+                            bus,
+                            address: addr,
+                        });
+                    }
+                    _ => {}
                 }
             }
         })
         .expect("failed to spawn hot-plug thread");
 
     Some(handle)
+}
+
+/// Extract PID, bus, and address from a udev event.
+fn extract_device_info(event: &udev::Event, _vid_str: &str) -> (u16, u8, u8) {
+    let pid = event
+        .property_value("PRODUCT")
+        .and_then(|v| v.to_str())
+        .and_then(|v| {
+            let parts: Vec<&str> = v.split('/').collect();
+            if parts.len() >= 2 {
+                u16::from_str_radix(parts[1], 16).ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    let busnum = event
+        .property_value("BUSNUM")
+        .and_then(|v| v.to_str())
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(0);
+
+    let devnum = event
+        .property_value("DEVNUM")
+        .and_then(|v| v.to_str())
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(0);
+
+    (pid, busnum, devnum)
 }
 
 #[cfg(test)]
@@ -220,8 +258,8 @@ mod tests {
     #[test]
     fn test_transport_event_device_arrived() {
         let event = TransportEvent::DeviceArrived {
-            vid: 0x3141,
-            pid: 0x4005,
+            vid: 0x3151,
+            pid: 0x4015,
             bus: 1,
             address: 5,
         };
@@ -232,8 +270,8 @@ mod tests {
                 bus,
                 address,
             } => {
-                assert_eq!(vid, 0x3141);
-                assert_eq!(pid, 0x4005);
+                assert_eq!(vid, 0x3151);
+                assert_eq!(pid, 0x4015);
                 assert_eq!(bus, 1);
                 assert_eq!(address, 5);
             }
@@ -259,14 +297,14 @@ mod tests {
     #[test]
     fn test_transport_event_is_clone() {
         let event = TransportEvent::DeviceArrived {
-            vid: 0x3141,
-            pid: 0x4005,
+            vid: 0x3151,
+            pid: 0x4015,
             bus: 1,
             address: 5,
         };
         let cloned = event.clone();
         match cloned {
-            TransportEvent::DeviceArrived { vid, .. } => assert_eq!(vid, 0x3141),
+            TransportEvent::DeviceArrived { vid, .. } => assert_eq!(vid, 0x3151),
             _ => panic!("expected DeviceArrived"),
         }
     }
@@ -274,8 +312,8 @@ mod tests {
     #[test]
     fn test_transport_event_is_debug() {
         let event = TransportEvent::DeviceArrived {
-            vid: 0x3141,
-            pid: 0x4005,
+            vid: 0x3151,
+            pid: 0x4015,
             bus: 1,
             address: 5,
         };

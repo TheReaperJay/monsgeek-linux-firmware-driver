@@ -1,83 +1,73 @@
 ---
 phase: 2
 slug: fea-protocol-hid-transport
-status: draft
+status: in_progress
 nyquist_compliant: false
-wave_0_complete: false
+wave_0_complete: true
 created: 2026-03-19
+corrected: 2026-03-23
 ---
 
 # Phase 2 — Validation Strategy
 
-> Per-phase validation contract for feedback sampling during execution.
-
----
+Validation for Phase 2 is now split between normal Rust test coverage and explicit host-side hardware verification on the wired M5W.
 
 ## Test Infrastructure
 
 | Property | Value |
 |----------|-------|
-| **Framework** | cargo test (built-in) |
-| **Config file** | Cargo.toml `[features] hardware = []` |
-| **Quick run command** | `cargo test -p monsgeek-transport` |
-| **Full suite command** | `cargo test --workspace` |
-| **Hardware test command** | `cargo test -p monsgeek-transport --features hardware` |
-| **Estimated runtime** | ~5 seconds (unit), ~30 seconds (hardware) |
+| **Framework** | `cargo test` |
+| **Hardware feature** | `hardware` |
+| **Quick run command** | `cargo test -p monsgeek-transport --lib` |
+| **Compile hardware tests** | `cargo test -p monsgeek-transport --features hardware --tests --no-run` |
+| **Hardware test command** | `cargo test -p monsgeek-transport --features hardware -- --ignored --nocapture` |
+| **Primary host checks** | `test_get_usb_version`, `test_enumerate_m5w`, `stall_recovery` |
 
----
+## What Has Been Verified
 
-## Sampling Rate
+| Behavior | Status | Evidence |
+|----------|--------|----------|
+| Transport crate compiles and unit tests pass | ✅ | `cargo test -p monsgeek-transport --lib` |
+| Hardware tests compile | ✅ | `cargo test -p monsgeek-transport --features hardware --tests --no-run` |
+| `GET_USB_VERSION` works on real M5W | ✅ | host-side hardware test passed |
+| `GET_USB_VERSION` device ID is 32-bit and equals `1308` | ✅ | parsed from live response |
+| Firmware-ID-aware enumeration finds M5W dynamically | ✅ | `test_enumerate_m5w` passed on host |
+| Reset-then-reopen clears transient `PIPE` state | ✅ | `stall_recovery` passed on host |
+| Short-lived session cleanup can restore typing | ✅ | IF0 reattach fix validated on host |
 
-- **After every task commit:** Run `cargo test -p monsgeek-transport`
-- **After every plan wave:** Run `cargo test --workspace`
-- **Before `/gsd:verify-work`:** Full suite must be green + hardware tests pass on real M5W
-- **Max feedback latency:** 5 seconds (unit tests)
+## Remaining Validation Before Phase 2 Closeout
 
----
+| Behavior | Requirement / Goal | Status |
+|----------|---------------------|--------|
+| Long-lived control-mode session preserves normal typing | Phase 2 closeout quality gate | ⬜ pending |
+| Hot-plug behavior remains stable through `udev` event path | HID-01 operational hardening | ⬜ pending |
+| Debounce / SET-GET round-trip verification on live hardware | HID-04 / feature-roundtrip quality gate | ⬜ pending |
+| Final Phase 2 summary written | planning closeout | ⬜ pending |
 
-## Per-Task Verification Map
+## Manual / Host-Only Verifications
 
-| Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
-|---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 02-01-01 | 01 | 1 | HID-01 | unit + hardware | `cargo test -p monsgeek-transport test_enumerate` | ❌ W0 | ⬜ pending |
-| 02-01-02 | 01 | 1 | HID-02 | hardware | `cargo test -p monsgeek-transport --features hardware test_get_usb_version` | ❌ W0 | ⬜ pending |
-| 02-02-01 | 02 | 1 | HID-03 | unit | `cargo test -p monsgeek-transport test_throttle` | ❌ W0 | ⬜ pending |
-| 02-02-02 | 02 | 1 | HID-04 | unit + hardware | `cargo test -p monsgeek-transport test_echo_matching` | ❌ W0 | ⬜ pending |
-| 02-03-01 | 03 | 1 | HID-05 | unit | `cargo test -p monsgeek-transport test_bounds_validation` | ❌ W0 | ⬜ pending |
-| 02-03-02 | 03 | 1 | HID-06 | unit (file check) | `cargo test -p monsgeek-transport test_udev_rules` | ❌ W0 | ⬜ pending |
+| Behavior | Why Host-Only | Command / Method |
+|----------|---------------|------------------|
+| Real `GET_USB_VERSION` | needs real USB hardware | `cargo test -p monsgeek-transport --features hardware --test hardware test_get_usb_version -- --ignored --nocapture` |
+| Dynamic enumeration | needs real USB hardware | `cargo test -p monsgeek-transport --features hardware --test hardware test_enumerate_m5w -- --ignored --nocapture` |
+| Reset recovery | needs real USB hardware | `cargo test -p monsgeek-transport --features hardware --test stall_recovery -- --nocapture` |
+| Interface ownership / typing preservation | needs live kernel / USB state | inspect with `lsusb -t` before and after host-side tests |
 
-*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+## Acceptance Standard For Phase 2
 
----
+Phase 2 should only be treated as complete when:
 
-## Wave 0 Requirements
-
-- [ ] `crates/monsgeek-transport/tests/hardware.rs` — gated integration tests for HID-01, HID-02, HID-04
-- [ ] Unit test stubs for throttle timing (HID-03), bounds validation (HID-05)
-- [ ] `deploy/99-monsgeek.rules` — udev rules file (HID-06)
-- [ ] Framework install: already available (cargo test built-in)
-
-*Wave 0 test stubs should be created as part of first plan execution.*
-
----
-
-## Manual-Only Verifications
-
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| Real M5W detection | HID-01 | Requires physical hardware connected | Plug in M5W, run `cargo test -p monsgeek-transport --features hardware test_enumerate` |
-| Real HID command round-trip | HID-02 | Requires physical hardware connected | With M5W connected, run `cargo test -p monsgeek-transport --features hardware test_get_usb_version` |
-| Udev rule installation | HID-06 | Requires sudo and system udev reload | Copy `deploy/99-monsgeek.rules` to `/etc/udev/rules.d/`, run `sudo udevadm control --reload-rules` |
-
----
+- the transport layer is hardware-verified on the wired M5W
+- the current planning documents reflect the corrected hardware facts
+- long-lived control mode no longer steals keyboard input unintentionally
+- the remaining operational behavior is documented clearly enough for Phase 3 to build on it safely
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 5s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] Unit and compile-time validation exist
+- [x] Real host-side transport validation exists
+- [ ] Long-lived transport ownership model finalized
+- [ ] Phase 2 summary completed
+- [ ] `nyquist_compliant: true` ready to set on closeout
 
-**Approval:** pending
+**Approval:** pending closeout of transport-mode ownership and summary

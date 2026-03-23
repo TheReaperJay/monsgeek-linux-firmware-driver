@@ -1,40 +1,41 @@
-# Requirements: MonsGeek Linux Driver & Configurator Bridge
+# Requirements: Linux FEA Keyboard Framework & Configurator Bridge
 
 **Defined:** 2026-03-19
-**Core Value:** The MonsGeek configurator must work on Linux — enabling the user to configure, tune, and flash their keyboard without ever needing a Windows machine.
+**Corrected:** 2026-03-23
+**Core Value:** The MonsGeek configurator must work on Linux, enabling users to configure, tune, and eventually flash supported keyboards without ever needing a Windows machine.
 
 ## v1 Requirements
 
-Requirements for initial release. Each maps to roadmap phases.
+Requirements for the current milestone. These focus on a working Linux transport and bridge, with the MonsGeek M5W as the first fully verified target.
 
 ### HID Transport
 
-- [x] **HID-01**: Driver detects and enumerates all yc3121-based MonsGeek keyboards (VID 0x3141) connected via USB
-- [x] **HID-02**: Driver sends FEA commands and receives responses using 64-byte HID Feature Reports with Bit7 checksums
+- [x] **HID-01**: Driver detects and enumerates supported FEA keyboards connected via USB using runtime discovery plus registry/profile matching
+- [x] **HID-02**: Driver sends FEA commands and receives responses using 64-byte HID Feature Reports on the vendor interface
 - [x] **HID-03**: Driver enforces mandatory 100ms inter-command delay to prevent yc3121 firmware crash/stall
-- [x] **HID-04**: Driver handles Linux hidraw stale read issue via retry-and-match loop (echo byte verification)
+- [x] **HID-04**: Driver handles stale, mismatched, or transient bad-response states using echo-matched retry logic and reset/reopen recovery where required
 - [x] **HID-05**: Driver validates all write indices against key matrix bounds before sending to prevent firmware OOB corruption
-- [x] **HID-06**: udev rules enable non-root HID access for yc3121 keyboards on Linux
+- [x] **HID-06**: udev rules enable non-root USB access for supported keyboards on Linux
 
 ### gRPC Bridge
 
-- [ ] **GRPC-01**: Server listens on localhost:3814 and accepts gRPC-Web connections from browser
-- [ ] **GRPC-02**: Server implements `sendRawFeature` RPC to forward raw HID commands to keyboard
-- [ ] **GRPC-03**: Server implements `readRawFeature` RPC to read raw HID responses from keyboard
+- [ ] **GRPC-01**: Server listens on localhost:3814 and accepts gRPC-Web connections from browser clients
+- [ ] **GRPC-02**: Server implements `sendRawFeature` RPC to forward raw HID commands to the keyboard
+- [ ] **GRPC-03**: Server implements `readRawFeature` RPC to read raw HID responses from the keyboard
 - [ ] **GRPC-04**: Server implements `watchDevList` RPC to stream device connect/disconnect events
 - [ ] **GRPC-05**: Server implements `getVersion` RPC returning driver version info
 - [ ] **GRPC-06**: Server implements `insertDb` and `getItemFromDb` RPCs for web app key-value storage
-- [ ] **GRPC-07**: Server sends correct CORS headers so MonsGeek web configurator can connect from browser
-- [ ] **GRPC-08**: Server matches the Windows `iot_driver.exe` proto contract exactly (including field names like `VenderMsg`, `DangleDevType`)
+- [ ] **GRPC-07**: Server sends the correct CORS headers so the MonsGeek web configurator can connect from browser context
+- [ ] **GRPC-08**: Server matches the Windows `iot_driver.exe` proto contract exactly, including upstream field-name quirks
 - [ ] **GRPC-09**: Systemd service unit enables auto-start on boot with managed lifecycle
 
 ### Key Remapping
 
-- [ ] **KEYS-01**: User can read current key mapping for any profile via GET_KEYMATRIX
-- [ ] **KEYS-02**: User can remap any key on any layer via SET_KEYMATRIX
-- [ ] **KEYS-03**: User can switch between 4 profiles via SET_PROFILE / GET_PROFILE
+- [ ] **KEYS-01**: User can read the current key mapping for any profile via GET_KEYMATRIX
+- [ ] **KEYS-02**: User can remap any key on any supported layer via SET_KEYMATRIX
+- [ ] **KEYS-03**: User can switch between the keyboard's supported profiles via SET_PROFILE / GET_PROFILE
 
-### RGB/LED Control
+### RGB / LED Control
 
 - [ ] **LED-01**: User can read current LED mode, brightness, speed, and color via GET_LEDPARAM
 - [ ] **LED-02**: User can set LED mode, brightness, speed, and color via SET_LEDPARAM
@@ -42,70 +43,67 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Debounce & Polling
 
 - [ ] **TUNE-01**: User can read and set debounce value via GET_DEBOUNCE / SET_DEBOUNCE
-- [ ] **TUNE-02**: User can read and set polling rate via GET_REPORT / SET_REPORT
+- [ ] **TUNE-02**: User can read and set polling rate via GET_REPORT / SET_REPORT where supported
 
 ### Macros
 
 - [ ] **MACR-01**: User can read existing macros via GET_MACRO
-- [ ] **MACR-02**: User can program macros (key sequences with delays) via SET_MACRO
+- [ ] **MACR-02**: User can program macros via SET_MACRO
 
-### Magnetic Switch / Rapid Trigger
+### Device-Specific Advanced Features
 
-- [ ] **MAG-01**: User can read magnetic switch calibration via GET_MAGNETISM_CAL
-- [ ] **MAG-02**: User can calibrate magnetic switches via SET_MAGNETISM_CAL
-- [ ] **MAG-03**: User can read per-key Rapid Trigger configuration via GET_MULTI_MAGNETISM
-- [ ] **MAG-04**: User can set per-key Rapid Trigger actuation/reset points via SET_MULTI_MAGNETISM
+- [ ] **MAG-01**: For device profiles that support them, user can read advanced switch calibration state
+- [ ] **MAG-02**: For device profiles that support them, user can calibrate advanced switch behavior
+- [ ] **MAG-03**: For device profiles that support them, user can read per-key rapid-trigger style configuration
+- [ ] **MAG-04**: For device profiles that support them, user can set per-key actuation/reset points
 
 ### Firmware Management
 
-- [ ] **FW-01**: User can read keyboard firmware version via GET_USB_VERSION and GET_REV
-- [ ] **FW-02**: User can flash firmware via bootloader entry (0x7F + magic word), chunk transfer, and CRC-24 verification
-- [ ] **FW-03**: Firmware flashing requires explicit user confirmation before entering bootloader (destructive: erases app region before USB init)
-- [ ] **FW-04**: Firmware flashing validates firmware image integrity (size, CRC) before initiating bootloader entry
+- [ ] **FW-01**: User can read keyboard firmware version via GET_USB_VERSION and GET_REV where available
+- [ ] **FW-02**: User can flash firmware via bootloader entry, chunk transfer, and CRC validation
+- [ ] **FW-03**: Firmware flashing requires explicit user confirmation before entering bootloader
+- [ ] **FW-04**: Firmware flashing validates firmware image integrity before initiating bootloader entry
 
 ### CLI
 
-- [ ] **CLI-01**: User can perform all keyboard operations (query, set, flash) via command-line interface
-- [ ] **CLI-02**: CLI uses JSON-driven device registry for extensible keyboard definitions (adding keyboards requires data, not code)
+- [ ] **CLI-01**: User can perform core keyboard operations via command-line interface
+- [ ] **CLI-02**: CLI uses the same JSON-driven registry/profile data as the bridge
 
 ### Device Registry
 
-- [x] **REG-01**: Device registry contains M5W definition (VID 0x3141, PID 0x4005, key matrix Common108_MG108B, device ID 1308)
-- [x] **REG-02**: Device registry is extensible — adding a new yc3121 keyboard requires only a JSON definition file
+- [x] **REG-01**: Device registry contains the corrected M5W definition: VID `0x3151`, PID `0x4015`, key matrix `Common108_MG108B`, device ID `1308`
+- [x] **REG-02**: Device registry is extensible; adding a supported keyboard profile is primarily data-driven rather than scattered hardcoded constants
 
-## v2 Requirements
+## v2 / Follow-On Requirements
 
-Deferred to future release. Tracked but not in current roadmap.
+Deferred until the core wired bridge is stable.
 
 ### Wireless Transport
 
-- **WIRE-01**: 2.4GHz dongle transport with flow control (poll GET_DONGLE_STATUS, retrieve GET_CACHED_RESPONSE)
-- **WIRE-02**: Bluetooth LE transport via GATT HOGP
+- **WIRE-01**: 2.4GHz dongle transport with appropriate flow control and response retrieval
+- **WIRE-02**: Bluetooth LE transport via GATT / HOGP where applicable
 
-### Kernel Driver
+### Kernel-Level Input Work
 
-- **KERN-01**: eBPF HID driver to fix ghosting/double-letter issues at kernel level (if configurator-based debounce tuning is insufficient)
+- **KERN-01**: eBPF or equivalent kernel/input-layer work if configurator tuning does not solve ghosting/double-letter issues
 
-### Advanced Features
+### Advanced Tooling
 
-- **ADV-01**: TUI (terminal UI) for interactive keyboard control
+- **ADV-01**: TUI for interactive keyboard control
 - **ADV-02**: Audio-reactive LED effects
 - **ADV-03**: Screen color sync for LED effects
 
-## Out of Scope
+## Out of Scope For The Current Milestone
 
 | Feature | Reason |
 |---------|--------|
-| Custom GUI application | gRPC bridge enables existing MonsGeek web configurator — no custom GUI needed |
-| Windows/macOS support | Linux-only solution by design |
-| Akko keyboard support | Different VID (0x3151), different firmware — handled by monsgeek-akko-linux project |
-| Bluetooth LE transport | M5W is wired; BLE deferred to v2 |
-| 2.4GHz dongle transport | Wired USB first; dongle deferred to v2 |
-| eBPF HID kernel driver | Only if configurator debounce tuning fails to fix typing issues |
+| Custom GUI application | The bridge exists specifically to reuse the existing configurator |
+| Windows/macOS runtime support | Linux-only project by design |
+| Broad promises for unvalidated keyboards | Architecture should be general, but support claims must follow real profile/transport validation |
+| Bluetooth LE transport | Deferred until wired and dongle paths are stable |
+| Audio-reactive LEDs / screen sync | Not part of the configurator-compatibility MVP |
 
 ## Traceability
-
-Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
@@ -152,5 +150,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 - Unmapped: 0
 
 ---
-*Requirements defined: 2026-03-19*
-*Last updated: 2026-03-19 after roadmap creation*
+*Last updated: 2026-03-23 after hardware-corrected transport and roadmap review*

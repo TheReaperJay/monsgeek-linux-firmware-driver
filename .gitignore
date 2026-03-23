@@ -6,3 +6,4 @@
 # Reference data -- not project deliverables
 /firmware/
 /references/
+.codex

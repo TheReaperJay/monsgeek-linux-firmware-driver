@@ -1,8 +1,17 @@
-# Roadmap: MonsGeek Linux Driver & Configurator Bridge
+# Roadmap: Linux FEA Keyboard Framework & Configurator Bridge
 
 ## Overview
 
-This roadmap takes the MonsGeek Linux driver from bare metal to full configurator bridge. The approach is bottom-up by dependency: protocol and transport first (Phases 1-2), then the gRPC bridge that makes the web configurator work (Phase 3), then systematic hardware verification of each keyboard feature category through the bridge (Phases 4-6), then power-user tooling (Phase 7), and finally the high-risk firmware update capability (Phase 8). Phase 3 completion is the MVP: the MonsGeek web configurator works on Linux. Phases 4-6 verify and harden every feature category against real yc3121 hardware. Phase 8 is intentionally last due to the destructive nature of bootloader entry.
+This roadmap takes the project from protocol groundwork to a reusable Linux framework for FEA-based MonsGeek/Akko keyboards, with the MonsGeek M5W as the first fully verified target and the MonsGeek configurator bridge as the MVP. The approach remains bottom-up by dependency: protocol and transport first (Phases 1-2), then the gRPC-Web bridge that makes the configurator work on Linux (Phase 3), then systematic hardware verification of feature categories through that bridge (Phases 4-6), then CLI/service packaging (Phase 7), and finally firmware update capability (Phase 8). Phase 3 completion is still the MVP.
+
+This roadmap supersedes earlier planning assumptions that turned out to be wrong on real hardware. The corrected transport facts are:
+
+- M5W wired USB identity is VID `0x3151`, PID `0x4015`; the 2.4GHz dongle uses PID `0x4011`
+- USB bus and address are runtime-discovered and must never be treated as stable identity
+- USB PID alone is not a trustworthy device identity; the framework should identify devices primarily by firmware-reported device ID from `GET_USB_VERSION`
+- `GET_USB_VERSION` reports the device ID as a 32-bit little-endian field
+- `libusb` hotplug arrival was not reliable in this Linux environment; `udev` monitoring is the practical hot-plug mechanism
+- Userspace sessions must hand `IF0` back to the kernel when they are done, unless a full userspace-input mode is intentionally active
 
 ## Phases
 
@@ -12,25 +21,25 @@ This roadmap takes the MonsGeek Linux driver from bare metal to full configurato
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Project Scaffolding & Device Registry** - Rust workspace structure, FEA protocol constants, and JSON-driven device registry with M5W definition
-- [ ] **Phase 2: FEA Protocol & HID Transport** - Protocol framing with checksums, raw HID I/O with safety guards, and non-root access via udev
+- [ ] **Phase 1: Project Scaffolding & Device Registry** - Rust workspace structure, FEA protocol constants, and JSON-driven device/profile registry with M5W as the first verified target
+- [ ] **Phase 2: FEA Protocol & HID Transport** - Protocol framing with checksums, raw HID I/O with safety guards, firmware-ID-aware discovery, and non-root access via udev
 - [ ] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
 - [ ] **Phase 4: Bridge Integration & Key Remapping** - End-to-end web configurator connection with verified key mapping and profile operations on real M5W hardware
 - [ ] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue
-- [ ] **Phase 6: Macros & Magnetic Switches** - Macro programming and magnetic switch calibration/Rapid Trigger verified on hardware
+- [ ] **Phase 6: Macros & Device-Specific Advanced Features** - Macro programming plus device-specific advanced switch features verified where supported by the target profile
 - [ ] **Phase 7: CLI & Service Deployment** - Command-line interface for all keyboard operations, systemd service for auto-start
 - [ ] **Phase 8: Firmware Update** - Firmware validation, bootloader entry with safety gates, chunk transfer with CRC-24 verification
 
 ## Phase Details
 
 ### Phase 1: Project Scaffolding & Device Registry
-**Goal**: Establish the Rust workspace and device registry so all subsequent phases build on a shared foundation with correct M5W device constants
+**Goal**: Establish the Rust workspace and data-driven device registry so all subsequent phases build on a shared foundation with correct device metadata and transport facts
 **Depends on**: Nothing (first phase)
 **Requirements**: REG-01, REG-02
 **Success Criteria** (what must be TRUE):
   1. Cargo workspace compiles with three crates (monsgeek-protocol, monsgeek-transport, monsgeek-driver) and all dependencies resolve
-  2. M5W device definition is loadable from JSON and contains correct VID (0x3141), PID (0x4005), device ID (1308), and key matrix identifier (Common108_MG108B)
-  3. A new yc3121 keyboard can be added by creating a JSON file without modifying any Rust source code
+  2. M5W device definition is loadable from JSON and contains the correct canonical wired USB identity (VID `0x3151`, PID `0x4015`), firmware device ID (`1308`), and key matrix identifier (`Common108_MG108B`)
+  3. A new supported keyboard profile can be added primarily through registry/profile data rather than hardcoded runtime constants
   4. FEA command constants and protocol types (command opcodes, report structure, Bit7 checksum) are defined and unit-tested
 **Plans**: 2 plans
 
@@ -39,15 +48,16 @@ Plans:
 - [ ] 01-02-PLAN.md — FEA protocol constants, checksum algorithms, and protocol family detection
 
 ### Phase 2: FEA Protocol & HID Transport
-**Goal**: Reliable, safe HID communication with yc3121 keyboards that handles all known hardware quirks
+**Goal**: Reliable, safe HID communication with FEA keyboards, first verified on the wired M5W, that handles real Linux and firmware quirks instead of assumed ones
 **Depends on**: Phase 1
 **Requirements**: HID-01, HID-02, HID-03, HID-04, HID-05, HID-06
 **Success Criteria** (what must be TRUE):
-  1. Driver detects the M5W keyboard when connected via USB and reports its VID, PID, and device ID
-  2. A GET_USB_VERSION command sent to the M5W returns a valid response with device ID 1308
+  1. Driver detects the M5W dynamically on any USB bus/address and reports runtime transport info plus firmware device ID `1308`
+  2. A `GET_USB_VERSION` command sent to the M5W returns a valid response whose 32-bit device ID field matches `1308`
   3. Commands sent faster than 100ms apart are automatically throttled by the transport layer (no firmware crash on rapid command sequences)
-  4. SET followed by GET for the same parameter returns the updated value (stale-read retry logic works)
+  4. Reset-then-reopen plus echo-matched query handling recover from the device's stale/PIPE error states, and SET followed by GET for the same parameter returns the updated value
   5. Running the driver as a non-root user with udev rules installed successfully opens the HID device
+  6. Userspace transport cleanup does not leave the keyboard non-functional; `IF0` is returned to the kernel unless a full userspace-input mode is intentionally active
 **Plans**: 3 plans
 
 Plans:
@@ -56,7 +66,7 @@ Plans:
 - [ ] 02-03-PLAN.md — Hardware integration tests and human verification on real M5W keyboard
 
 ### Phase 3: gRPC-Web Bridge
-**Goal**: MonsGeek web configurator at app.monsgeek.com can connect to the locally running bridge and see the keyboard
+**Goal**: MonsGeek web configurator at app.monsgeek.com can connect to the locally running bridge and see the current keyboard through the reusable transport layer
 **Depends on**: Phase 2
 **Requirements**: GRPC-01, GRPC-02, GRPC-03, GRPC-04, GRPC-05, GRPC-06, GRPC-07, GRPC-08
 **Success Criteria** (what must be TRUE):
@@ -101,15 +111,15 @@ Plans:
 - [ ] 05-01: TBD
 - [ ] 05-02: TBD
 
-### Phase 6: Macros & Magnetic Switches
-**Goal**: Users can program macros and configure magnetic switch behavior via the web configurator on Linux
+### Phase 6: Macros & Device-Specific Advanced Features
+**Goal**: Users can program macros and configure device-specific advanced switch features via the web configurator on Linux where the target profile supports them
 **Depends on**: Phase 3
 **Requirements**: MACR-01, MACR-02, MAG-01, MAG-02, MAG-03, MAG-04
 **Success Criteria** (what must be TRUE):
   1. User reads existing macros from the keyboard via the web configurator
   2. User programs a new macro (key sequence with delays) and it executes correctly when triggered
-  3. User reads magnetic switch calibration state via the web configurator
-  4. User configures per-key Rapid Trigger actuation and reset points and the keyboard responds to the new thresholds
+  3. For devices that support magnetic or Hall-effect features, the user reads switch calibration state via the web configurator
+  4. For devices that support Rapid Trigger or equivalent features, the user configures per-key actuation/reset points and the keyboard responds to the new thresholds
 **Plans**: TBD
 
 Plans:
@@ -155,10 +165,10 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Project Scaffolding & Device Registry | 2/2 | Complete | 2026-03-19 |
-| 2. FEA Protocol & HID Transport | 0/3 | Planning complete | - |
+| 2. FEA Protocol & HID Transport | 2/3 | In progress: hardware validation and transport-mode cleanup | - |
 | 3. gRPC-Web Bridge | 0/3 | Not started | - |
 | 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
 | 5. LED Control & Tuning | 0/2 | Not started | - |
-| 6. Macros & Magnetic Switches | 0/2 | Not started | - |
+| 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
 | 8. Firmware Update | 0/2 | Not started | - |

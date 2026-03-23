@@ -132,8 +132,8 @@ mod tests {
     fn make_device(key_count: Option<u8>, layer: Option<u8>) -> DeviceDefinition {
         DeviceDefinition {
             id: 1308,
-            vid: 0x3141,
-            pid: 0x4005,
+            vid: 0x3151,
+            pid: 0x4015,
             name: "test_device".to_string(),
             display_name: "Test".to_string(),
             company: None,
@@ -197,24 +197,16 @@ mod tests {
             .unwrap_or_else(|e| panic!("udev rules file missing at {}: {}", rules_path, e));
 
         assert!(
-            content.contains(r#"ATTRS{idVendor}=="3141""#),
-            "udev rules must match MonsGeek VID 0x3141"
+            content.contains(r#"ATTRS{idVendor}=="3151""#),
+            "udev rules must match MonsGeek VID 0x3151"
         );
         assert!(
-            content.contains(r#"MODE="0660""#),
+            content.contains(r#"MODE="0666""#),
             "udev rules must set file permissions"
         );
         assert!(
             content.contains(r#"TAG+="uaccess""#),
             "udev rules must grant uaccess"
-        );
-        assert!(
-            content.contains(r#"ATTR{bInterfaceNumber}=="02""#),
-            "udev rules must target IF2"
-        );
-        assert!(
-            content.contains("echo -n %k > /sys/bus/usb/drivers/usbhid/unbind"),
-            "udev rules must unbind usbhid from IF2"
         );
     }
 }

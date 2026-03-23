@@ -14,7 +14,7 @@ provides:
   - UsbSession struct with open/open_at, vendor_set_report (64-byte), vendor_get_report (returns [u8; 64] by value)
   - HID class constants verified against reference (REQUEST_TYPE_OUT=0x21, HID_SET_REPORT=0x09, FEATURE_REPORT_WVALUE=0x0300)
   - validate_key_index and validate_write_request for key matrix bounds checking
-  - deploy/99-monsgeek.rules udev rules for non-root access and IF2 unbind
+  - deploy/99-monsgeek.rules udev rules for non-root access (the earlier IF2-unbind assumption was later superseded)
   - 21 unit tests covering error types, HID constants, bounds validation, udev file smoke test
 
 affects: [02-02, 02-03, phase-3, phase-4, phase-5, phase-7]
@@ -53,6 +53,8 @@ completed: 2026-03-19
 
 # Phase 02 Plan 01: Transport Foundation Summary
 
+> Historical correction (2026-03-23): this summary predates live hardware validation. The earlier M5W USB IDs and IF2-unbind-centric assumptions were superseded by verified M5W behavior: wired `0x3151:0x4015`, 32-bit `GET_USB_VERSION` device identity, and `HID_QUIRK_IGNORE` plus explicit `IF0` handoff as the current host setup.
+
 **TransportError enum, rusb-based UsbSession with HID control transfers on IF2, key matrix bounds validation, and udev rules for non-root keyboard access**
 
 ## Performance
@@ -67,7 +69,7 @@ completed: 2026-03-19
 - TransportError enum covers all 8 error cases needed across Phase 2: Usb, Timeout, EchoMismatch, DeviceNotFound, BoundsViolation, KernelDriverActive, Disconnected, ChannelClosed
 - UsbSession wraps rusb::DeviceHandle with vendor_set_report (64-byte assert) and vendor_get_report (returns [u8; 64] by value), ready for flow_control layer to build upon
 - Key matrix bounds validation prevents firmware OOB corruption: validate_key_index checks raw bounds, validate_write_request extracts bounds from DeviceDefinition
-- Udev rules grant non-root USB access for VID 0x3141 and unbind usbhid from IF2 on M5W (PID 0x4005) to prevent firmware STALL
+- Udev rules grant non-root USB access; the earlier IF2-unbind-first workaround was later superseded by the hardware-validated host setup
 - 94 total tests pass across workspace (73 Phase 1 + 21 new transport tests)
 
 ## Task Commits

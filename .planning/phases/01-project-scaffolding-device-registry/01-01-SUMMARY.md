@@ -12,7 +12,7 @@ provides:
   - Cargo workspace with three crates (monsgeek-protocol, monsgeek-transport, monsgeek-driver)
   - DeviceDefinition struct with serde camelCase JSON deserialization
   - DeviceRegistry with directory scanning and multi-index lookup (by ID, by VID/PID)
-  - M5W device JSON definition (VID 0x3141, PID 0x4005, ID 1308)
+  - M5W device JSON definition (corrected later to wired VID 0x3151, PID 0x4015, ID 1308)
   - Error types (ProtocolError, RegistryError) with thiserror
   - 15 unit tests covering device deserialization, magnetism logic, registry operations
 
@@ -56,7 +56,9 @@ completed: 2026-03-19
 
 # Phase 01 Plan 01: Workspace Scaffolding & Device Registry Summary
 
-**Rust workspace with three crates, JSON-driven DeviceRegistry with M5W definition (VID 0x3141, PID 0x4005, ID 1308), and 15 unit tests**
+> Historical correction (2026-03-23): this summary captured an early, incorrect M5W USB identity extraction. The verified wired M5W USB identity is `0x3151:0x4015`, not `0x3141:0x4005`. Treat the registry/device-architecture work here as valid, but the specific M5W USB constants as superseded.
+
+**Rust workspace with three crates, JSON-driven DeviceRegistry with M5W definition (later corrected to wired VID 0x3151, PID 0x4015, ID 1308), and 15 unit tests**
 
 ## Performance
 
@@ -68,7 +70,7 @@ completed: 2026-03-19
 
 ## Accomplishments
 - Cargo workspace compiles with three crates: monsgeek-protocol (lib), monsgeek-transport (lib shell), monsgeek-driver (binary)
-- M5W device definition loads from JSON with correct VID (0x3141), PID (0x4005), device ID (1308), keyLayoutName (Common108_MG108B), chipFamily (YC3121)
+- M5W device definition loads from JSON with the intended device metadata; the wired USB VID/PID values were corrected later during real hardware validation to `0x3151:0x4015`
 - DeviceRegistry scans devices/ directory for *.json files and indexes by device ID and VID/PID
 - Adding a new JSON file to devices/ is verified (via test_registry_extensible) to work without code changes
 - has_magnetism() correctly handles all three cases: magnetism flag, no_magnetic_switch flag, default

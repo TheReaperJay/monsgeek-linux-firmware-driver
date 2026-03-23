@@ -8,6 +8,8 @@ re_verification: false
 
 # Phase 01: Project Scaffolding & Device Registry Verification Report
 
+> Historical correction (2026-03-23): this verification report passed against an early registry entry that later proved to use the wrong M5W USB IDs. The architectural verification remains useful, but the authoritative M5W wired identity is now `0x3151:0x4015`.
+
 **Phase Goal:** Scaffold Rust workspace (3 crates), implement JSON-driven device registry, define FEA protocol constants and checksum algorithms.
 **Verified:** 2026-03-19T10:30:00Z
 **Status:** PASSED
@@ -21,14 +23,14 @@ re_verification: false
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | M5W device definition loads from JSON with VID 0x3141, PID 0x4005, device ID 1308, keyLayoutName Common108_MG108B | VERIFIED | `m5w.json` contains exact values; `test_m5w_identity` passes |
+| 1 | M5W device definition loads from JSON with the correct device metadata, later corrected to wired VID 0x3151, PID 0x4015, device ID 1308, keyLayoutName Common108_MG108B | VERIFIED | registry architecture was verified; wired USB IDs were corrected later through hardware validation |
 | 2 | DeviceRegistry scans devices/ directory and returns devices by ID and by VID/PID | VERIFIED | `registry.rs` implements `load_from_directory` + dual HashMap indexes; `test_load_m5w_from_devices_dir`, `test_find_by_vid_pid_m5w` pass |
 | 3 | Adding a new JSON file to devices/ makes it discoverable without modifying Rust source | VERIFIED | `test_registry_extensible` writes two JSON files to a temp dir, loads registry, asserts both found by ID |
 | 4 | Workspace compiles with three crates: monsgeek-protocol, monsgeek-transport, monsgeek-driver | VERIFIED | `cargo build --workspace` succeeds; all 73 tests pass across the workspace |
 | 5 | FEA command constants match reference implementation byte values exactly | VERIFIED | `cmd.rs` contains all SET/GET/dongle constants; spot-checks pass: SET_LEDPARAM=0x07, GET_USB_VERSION=0x8F, GET_DONGLE_STATUS=0xF7, STATUS_SUCCESS=0xAA |
 | 6 | Bit7 checksum produces correct value for known test vectors from reference | VERIFIED | `test_checksum_bit7_single_byte`: 0x8F -> 0x70; `test_build_command_get_usb_version`: buf[8]=0x70; `test_checksum_bit7_multiple_bytes`: sum=28, result=227 |
 | 7 | build_command produces 65-byte buffer with report ID 0 at byte 0, command at byte 1, checksum at correct position | VERIFIED | `build_command` allocates `vec![0u8; hid::REPORT_SIZE]`; applies checksum to `buf[1..]` (excluding report ID); `test_build_command_checksum_excludes_report_id` explicitly verifies this |
-| 8 | Protocol family detection identifies M5W as YiChip by name prefix yc3121_ and by PID 0x4005 heuristic | VERIFIED | `test_detect_yichip_by_name` and `test_detect_yichip_by_pid` both pass; case-insensitive detection also tested |
+| 8 | Protocol family detection identifies M5W as YiChip by name prefix yc3121_ and by PID-family heuristic | VERIFIED | `test_detect_yichip_by_name` and `test_detect_yichip_by_pid` both pass; case-insensitive detection also tested |
 | 9 | YiChip and RY5088 command tables contain divergent command bytes for the commands that differ | VERIFIED | YICHIP_COMMANDS.set_reset=0x02 vs RY5088_COMMANDS.set_reset=0x01; YICHIP_COMMANDS.set_debounce=0x11 vs 0x06; `set_report=None` on YiChip vs `Some(0x03)` on RY5088 |
 
 **Score:** 9/9 truths verified
@@ -43,7 +45,7 @@ re_verification: false
 | `crates/monsgeek-protocol/Cargo.toml` | Protocol crate with serde, serde_json, thiserror, glob | VERIFIED | All four dependencies present; `edition = "2024"` |
 | `crates/monsgeek-protocol/src/device.rs` | DeviceDefinition struct with serde deserialization | VERIFIED | `pub struct DeviceDefinition` with `#[serde(rename_all = "camelCase")]`; exports DeviceDefinition, FnSysLayer, TravelSetting, RangeConfig |
 | `crates/monsgeek-protocol/src/registry.rs` | DeviceRegistry with directory scanning and multi-index lookup | VERIFIED | `HashMap<i32, DeviceDefinition>` + `HashMap<(u16, u16), Vec<i32>>`; `load_from_directory`, `find_by_id`, `find_by_vid_pid` all present |
-| `crates/monsgeek-protocol/devices/m5w.json` | M5W device definition with correct constants | VERIFIED | id=1308, vid=12609 (0x3141), pid=16389 (0x4005), keyLayoutName="Common108_MG108B"; Akko VID 12625 absent |
+| `crates/monsgeek-protocol/devices/m5w.json` | M5W device definition with corrected constants | VERIFIED | current canonical wired identity is id=1308, vid=12625 (0x3151), pid=16405 (0x4015), keyLayoutName="Common108_MG108B" |
 | `crates/monsgeek-protocol/src/error.rs` | Error types for protocol and registry operations | VERIFIED | `ProtocolError` (InvalidChecksum, InvalidCommand, ResponseError) and `RegistryError` (GlobPattern, ReadFile, ParseJson, DuplicateDeviceId, NoDevicesFound) |
 | `crates/monsgeek-protocol/src/cmd.rs` | All FEA SET and GET command constants, dongle commands, response status | VERIFIED | 21 SET, 21 GET, 10 dongle constants + STATUS_SUCCESS; `pub fn name(cmd: u8)` present |
 | `crates/monsgeek-protocol/src/checksum.rs` | ChecksumType enum, calculate_checksum, apply_checksum, build_command | VERIFIED | All four exports present plus `build_ble_command`; `#[default] Bit7` confirmed |
@@ -76,7 +78,7 @@ re_verification: false
 
 | Requirement | Source Plan | Description | Status | Evidence |
 |-------------|-------------|-------------|--------|----------|
-| REG-01 | 01-01-PLAN.md, 01-02-PLAN.md | Device registry contains M5W definition (VID 0x3141, PID 0x4005, key matrix Common108_MG108B, device ID 1308) | SATISFIED | `m5w.json` contains all required values; `test_m5w_identity` and `test_load_m5w_from_devices_dir` confirm correct loading |
+| REG-01 | 01-01-PLAN.md, 01-02-PLAN.md | Device registry contains M5W definition (wired VID 0x3151, PID 0x4015, key matrix Common108_MG108B, device ID 1308) | SATISFIED | current planning truth uses the corrected wired M5W identity |
 | REG-02 | 01-01-PLAN.md, 01-02-PLAN.md | Device registry is extensible — adding a new yc3121 keyboard requires only a JSON definition file | SATISFIED | `test_registry_extensible` writes a second JSON file at runtime and verifies it is discovered without any Rust source changes |
 
 No orphaned requirements — REQUIREMENTS.md Traceability table maps only REG-01 and REG-02 to Phase 1.

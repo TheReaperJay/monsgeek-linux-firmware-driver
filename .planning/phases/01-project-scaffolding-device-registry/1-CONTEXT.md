@@ -1,5 +1,7 @@
 # Phase 1: Project Scaffolding & Device Registry - Context
 
+> Historical correction (2026-03-23): this context file predates the corrected M5W USB identity. Use the current project and roadmap docs for authoritative M5W constants and framework scope.
+
 **Gathered:** 2026-03-19
 **Status:** Ready for planning
 
@@ -44,7 +46,7 @@ Establish the Rust workspace and device registry so all subsequent phases build 
 - Reference project (`references/monsgeek-akko-linux/`) is a knowledge source, not a code source — we read it to understand the protocol, then write our own implementation
 - Extract from reference: command opcodes, checksum algorithms, report framing, protocol family detection, device schema shape, timing constants
 - Extract from Windows Electron app: M5W-specific device data (VID, PID, device ID, key count, key layout, LED matrix, feature flags, chip family, travel settings)
-- The reference uses VID 0x3151 (Akko); we use VID 0x3141 (MonsGeek) — protocol is the same, device identity differs
+- The reference uses the broader FEA-family device space and must be relied on architecturally; the verified wired M5W identity was later corrected to VID `0x3151`, PID `0x4015`
 
 </decisions>
 

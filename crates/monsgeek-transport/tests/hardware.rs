@@ -6,6 +6,9 @@
 //! echo matching, throttling, bounds validation against real device definitions,
 //! udev rules correctness, and hot-plug detection.
 //!
+//! All VID/PID values come from the device registry JSON files — nothing is
+//! hardcoded. If the JSON changes, the tests follow automatically.
+//!
 //! Run with:
 //! ```sh
 //! cargo test -p monsgeek-transport --features hardware -- --ignored --nocapture
@@ -14,14 +17,17 @@
 //! All tests are `#[ignore]` to prevent accidental execution in CI.
 
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Instant;
 
-use monsgeek_protocol::{ChecksumType, DeviceRegistry, ProtocolFamily};
-use monsgeek_transport::{connect, validate_write_request, TransportEvent};
+use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry, ProtocolFamily};
+use monsgeek_transport::{connect, validate_write_request, TransportEvent, UsbVersionInfo};
 
-const M5W_VID: u16 = 0x3141;
-const M5W_PID: u16 = 0x4005;
 const M5W_DEVICE_ID: i32 = 1308;
+
+/// All hardware tests share a single physical USB device. This mutex ensures
+/// only one test accesses the device at a time.
+static HW_LOCK: Mutex<()> = Mutex::new(());
 
 /// Path to the device registry JSON files, relative to the workspace root.
 fn devices_dir() -> std::path::PathBuf {
@@ -37,16 +43,25 @@ fn load_registry() -> DeviceRegistry {
         .expect("failed to load device registry from devices/ directory")
 }
 
+/// Load the M5W device definition from the registry.
+fn load_m5w(registry: &DeviceRegistry) -> &DeviceDefinition {
+    registry
+        .find_by_id(M5W_DEVICE_ID)
+        .expect("M5W (device ID 1308) not found in registry")
+}
+
 // ---------------------------------------------------------------------------
-// Test 1: Device enumeration (HID-01)
+// Test 1: Device probe by firmware ID (HID-01)
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore]
 fn test_enumerate_m5w() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
-    let devices = monsgeek_transport::discovery::enumerate_devices(&registry)
-        .expect("enumerate_devices failed");
+    let m5w_def = load_m5w(&registry);
+    let devices = monsgeek_transport::discovery::probe_devices(&registry)
+        .expect("probe_devices failed");
 
     assert!(
         !devices.is_empty(),
@@ -55,15 +70,14 @@ fn test_enumerate_m5w() {
 
     let m5w = devices
         .iter()
-        .find(|d| d.vid == M5W_VID && d.pid == M5W_PID)
-        .expect("M5W not found in enumerated devices");
+        .find(|d| d.vid == m5w_def.vid && d.device_id == M5W_DEVICE_ID)
+        .expect("M5W not found in probed devices");
 
-    assert_eq!(m5w.vid, M5W_VID);
-    assert_eq!(m5w.pid, M5W_PID);
+    assert_eq!(m5w.vid, m5w_def.vid);
     assert_eq!(m5w.device_id, M5W_DEVICE_ID);
     println!(
-        "Found M5W: {} (ID {}) at bus {} addr {}",
-        m5w.display_name, m5w.device_id, m5w.bus, m5w.address
+        "Found M5W: {} (ID {}) at bus {} addr {} PID 0x{:04X}",
+        m5w.display_name, m5w.device_id, m5w.bus, m5w.address, m5w.pid
     );
 }
 
@@ -74,27 +88,33 @@ fn test_enumerate_m5w() {
 #[test]
 #[ignore]
 fn test_get_usb_version() {
-    let (handle, _events) = connect(M5W_VID, M5W_PID)
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w)
         .expect("failed to connect to M5W");
 
     let response = handle
         .send_query(0x8F, &[], ChecksumType::Bit7)
         .expect("GET_USB_VERSION query failed");
 
-    // Echo byte must match the command.
     assert_eq!(
         response[0], 0x8F,
         "echo byte mismatch: expected 0x8F, got 0x{:02X}",
         response[0]
     );
 
-    // Log the full response for debugging -- the device ID and firmware
-    // version are encoded in subsequent bytes.
     println!("GET_USB_VERSION response: {:02X?}", &response[..16]);
 
-    // Parse device ID from response bytes 1-2 (little-endian u16).
-    let device_id = u16::from_le_bytes([response[1], response[2]]);
-    println!("Parsed device ID: {} (0x{:04X})", device_id, device_id);
+    let usb_version = UsbVersionInfo::parse(&response)
+        .expect("failed to parse GET_USB_VERSION response");
+    assert_eq!(usb_version.device_id_i32(), M5W_DEVICE_ID);
+    println!(
+        "Parsed device ID: {} (0x{:08X}), firmware version: 0x{:04X}",
+        usb_version.device_id,
+        usb_version.device_id,
+        usb_version.firmware_version
+    );
 
     handle.shutdown();
 }
@@ -106,7 +126,10 @@ fn test_get_usb_version() {
 #[test]
 #[ignore]
 fn test_throttle_rapid_commands() {
-    let (handle, _events) = connect(M5W_VID, M5W_PID)
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w)
         .expect("failed to connect to M5W");
 
     let start = Instant::now();
@@ -153,7 +176,10 @@ fn test_throttle_rapid_commands() {
 #[test]
 #[ignore]
 fn test_echo_matching() {
-    let (handle, _events) = connect(M5W_VID, M5W_PID)
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w)
         .expect("failed to connect to M5W");
 
     // Command 1: GET_USB_VERSION (0x8F) -- shared across protocol families.
@@ -167,8 +193,7 @@ fn test_echo_matching() {
     );
 
     // Command 2: GET_DEBOUNCE -- family-specific command byte.
-    // M5W is YiChip (name prefix "yc3121_", PID 0x4005).
-    let family = ProtocolFamily::detect(Some("yc3121_m5w_soc"), M5W_PID);
+    let family = ProtocolFamily::detect(Some(&m5w.name), m5w.pid);
     let get_debounce_cmd = family.commands().get_debounce;
     println!(
         "Protocol family: {} -> GET_DEBOUNCE = 0x{:02X}",
@@ -196,10 +221,9 @@ fn test_echo_matching() {
 #[test]
 #[ignore]
 fn test_bounds_validation() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
-    let m5w = registry
-        .find_by_id(M5W_DEVICE_ID)
-        .expect("M5W definition not found in registry");
+    let m5w = load_m5w(&registry);
 
     // M5W has 108 keys and 4 layers.
     assert_eq!(m5w.key_count, Some(108), "M5W key_count mismatch");
@@ -244,6 +268,9 @@ fn test_bounds_validation() {
 #[test]
 #[ignore]
 fn test_udev_rules_file() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
     let rules_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("deploy/99-monsgeek.rules");
 
     assert!(
@@ -255,9 +282,11 @@ fn test_udev_rules_file() {
     let content = std::fs::read_to_string(&rules_path)
         .unwrap_or_else(|e| panic!("failed to read udev rules: {}", e));
 
+    let expected_vid = format!("ATTRS{{idVendor}}==\"{:04x}\"", m5w.vid);
     assert!(
-        content.contains(r#"ATTRS{idVendor}=="3141""#),
-        "udev rules must match MonsGeek VID 0x3141"
+        content.contains(&expected_vid),
+        "udev rules must match VID from registry (expected {})",
+        expected_vid
     );
 
     assert!(
@@ -265,27 +294,29 @@ fn test_udev_rules_file() {
         "udev rules must grant non-root access via uaccess tag"
     );
 
-    assert!(
-        content.contains(r#"bInterfaceNumber}=="02""#),
-        "udev rules must target IF2 (vendor interface)"
-    );
-
     println!("Udev rules file verified at {}", rules_path.display());
 }
 
 // ---------------------------------------------------------------------------
 // Test 7: Hot-plug detection (HID-01, hot-plug aspect)
+//
+// MUST run last — unplugging the keyboard disrupts the device state
+// (new address, new device node, udev re-applies permissions).
+// The z_ prefix ensures alphabetical ordering puts this after all other tests.
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore]
-fn test_hot_plug_detection() {
+fn z_test_hot_plug_detection() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if !rusb::has_hotplug() {
         println!("SKIP: hot-plug not supported on this platform");
         return;
     }
 
-    let (handle, event_rx) = connect(M5W_VID, M5W_PID)
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, event_rx) = connect(m5w)
         .expect("failed to connect to M5W");
 
     println!("Hot-plug test: please unplug and replug the M5W keyboard within 30 seconds");

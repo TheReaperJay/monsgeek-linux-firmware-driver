@@ -123,8 +123,8 @@ mod tests {
             .expect("failed to deserialize M5W JSON");
 
         assert_eq!(device.id, 1308);
-        assert_eq!(device.vid, 0x3141); // 12609
-        assert_eq!(device.pid, 0x4005); // 16389
+        assert_eq!(device.vid, 0x3151); // 12625
+        assert_eq!(device.pid, 0x4015); // 16405
         assert_eq!(device.name, "yc3121_m5w_soc");
         assert_eq!(device.display_name, "M5W");
         assert_eq!(device.company, Some("MonsGeek".to_string()));
@@ -152,8 +152,8 @@ mod tests {
         let device: DeviceDefinition = serde_json::from_str(m5w_json())
             .expect("failed to deserialize M5W JSON");
 
-        assert_eq!(device.vid, 0x3141, "VID should be 0x3141 (MonsGeek)");
-        assert_eq!(device.pid, 0x4005, "PID should be 0x4005");
+        assert_eq!(device.vid, 0x3151, "VID should be 0x3151 (MonsGeek)");
+        assert_eq!(device.pid, 0x4015, "PID should be 0x4015");
         assert_eq!(device.id, 1308, "device ID should be 1308");
     }
 

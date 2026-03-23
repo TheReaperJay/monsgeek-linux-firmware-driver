@@ -58,6 +58,8 @@ completed: 2026-03-19
 
 # Phase 01 Plan 02: FEA Protocol Constants & Checksum Algorithms Summary
 
+> Historical correction (2026-03-23): this summary remains useful for protocol structure, but any M5W-specific VID/PID assumptions inherited from early planning should be treated as superseded by the corrected registry and planning documents.
+
 **FEA command opcodes, Bit7/Bit8 checksum algorithms, USB/BLE command builders, and YiChip vs RY5088 protocol family detection with 62 unit tests**
 
 ## Performance

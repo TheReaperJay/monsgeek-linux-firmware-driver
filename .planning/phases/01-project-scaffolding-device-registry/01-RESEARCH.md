@@ -1,5 +1,7 @@
 # Phase 1: Project Scaffolding & Device Registry - Research
 
+> Historical correction (2026-03-23): this research file predates real M5W hardware validation and carries the old USB-ID extraction. Its registry and protocol-structure lessons remain useful, but M5W-specific USB constants are superseded by the corrected planning docs.
+
 **Researched:** 2026-03-19
 **Domain:** Rust workspace structure, serde JSON device registry, HID protocol constants
 **Confidence:** HIGH
@@ -56,7 +58,7 @@ None -- discussion stayed within phase scope.
 
 | ID | Description | Research Support |
 |----|-------------|-----------------|
-| REG-01 | Device registry contains M5W definition (VID 0x3141, PID 0x4005, key matrix Common108_MG108B, device ID 1308) | Reference `device_loader.rs` defines the full `JsonDeviceDefinition` schema. M5W data must be extracted from the Windows Electron app JS bundle (`firmware/MonsGeek_v4_setup_500.2.13_WIN2026032/dist/index.eb7071d5.js`). VID is 0x3141 (MonsGeek), not 0x3151 (Akko). |
+| REG-01 | Device registry contains M5W definition (wired VID 0x3151, PID 0x4015, key matrix Common108_MG108B, device ID 1308) | Reference `device_loader.rs` defines the full `JsonDeviceDefinition` schema. M5W data can be extracted from the Windows Electron app JS bundle, but USB IDs must be validated against real hardware and the transport references because the early bundle-derived extraction was wrong. |
 | REG-02 | Device registry is extensible -- adding a new yc3121 keyboard requires only a JSON definition file | One-file-per-device architecture in `devices/` directory. Registry scans directory, deserializes each `.json` file into `DeviceDefinition`. No Rust source changes needed for new devices. |
 
 </phase_requirements>
@@ -139,8 +141,8 @@ monsgeek-firmware-driver/
 ```json
 {
   "id": 1308,
-  "vid": 12609,
-  "pid": 16389,
+  "vid": 12625,
+  "pid": 16405,
   "name": "yc3121_m5w",
   "displayName": "MonsGeek M5W",
   "company": "MonsGeek",
@@ -158,7 +160,7 @@ monsgeek-firmware-driver/
   "chipFamily": "YC3121"
 }
 ```
-Note: VID 0x3141 = 12609 decimal, PID 0x4005 = 16389 decimal. The JSON stores numeric values; hex representations are for human reference only.
+Note: the verified wired M5W identity is VID 0x3151 = 12625 decimal and PID 0x4015 = 16405 decimal. The JSON stores numeric values; hex representations are for human reference only.
 
 ### Pattern 2: Registry with Multi-Index Lookup
 **What:** `DeviceRegistry` maintains `HashMap<i32, DeviceDefinition>` (by device ID) and `HashMap<(u16, u16), Vec<i32>>` (by VID/PID -> list of device IDs). Lookups by device ID are unique; lookups by VID/PID may return multiple matches (shared-PID devices).
@@ -224,7 +226,7 @@ pub fn calculate_checksum(data: &[u8], checksum_type: ChecksumType) -> u8 {
 
 ### Pattern 4: Protocol Family Detection
 **What:** Two protocol families (RY5088, YiChip) with different command byte mappings. Detection uses device name prefix first, then PID heuristic fallback.
-**When to use:** When constructing commands for a specific device. The M5W is YiChip (PID 0x4005 matches 0x40xx pattern, and name prefix `yc3121_`).
+**When to use:** When constructing commands for a specific device. The M5W is YiChip (its name prefix is `yc3121_`, and its wired PID `0x4015` also matches the broader `0x40xx` transport-family heuristic).
 **Example:**
 ```rust
 // Source: Reference protocol.rs ProtocolFamily::detect
@@ -253,7 +255,7 @@ pub fn detect(device_name: Option<&str>, pid: u16) -> ProtocolFamily {
 - **Hardcoded key matrix in Rust source:** The reference project has a `matrix` module with hardcoded key names. Our architecture puts key matrices in device JSON files, not in Rust source. Do NOT create a hardcoded matrix module.
 - **Monolithic devices.json:** The reference uses a single `devices.json` with hundreds of devices. Our architecture uses one file per device for extensibility. Do NOT create a single combined file.
 - **OS dependencies in monsgeek-protocol:** This crate must be pure computation. No `hidapi`, no `tokio`, no `std::fs` except in the registry loader (which reads JSON files). The registry loader is the only part that touches the filesystem.
-- **Vendor ID confusion:** The reference project uses VID 0x3151 (Akko). Our project uses VID 0x3141 (MonsGeek). These are DIFFERENT vendors sharing the same protocol. Do NOT copy the Akko VID.
+- **Single-source USB identity assumptions:** The early Windows JS-bundle extraction produced the wrong M5W USB identity. Do not trust a single source. Validate USB IDs against live descriptors and the stronger transport references before hardcoding them into planning or code.
 
 ## Don't Hand-Roll
 
@@ -268,10 +270,10 @@ pub fn detect(device_name: Option<&str>, pid: u16) -> ProtocolFamily {
 ## Common Pitfalls
 
 ### Pitfall 1: VID/PID Numeric Representation Confusion
-**What goes wrong:** JSON stores VID/PID as decimal integers (12609, 16389) while humans think in hex (0x3141, 0x4005). Mixing representations leads to wrong values.
+**What goes wrong:** JSON stores VID/PID as decimal integers (12625, 16405) while humans think in hex (0x3151, 0x4015). Mixing representations leads to wrong values.
 **Why it happens:** The reference code has `vid_hex` and `pid_hex` string fields alongside numeric `vid` and `pid` fields.
-**How to avoid:** Store VID/PID as `u16` in Rust. JSON files use decimal numbers. Provide display formatting that shows hex. Add constants: `pub const MONSGEEK_VID: u16 = 0x3141;`
-**Warning signs:** Seeing the Akko VID (0x3151 = 12625) instead of MonsGeek VID (0x3141 = 12609) in device JSON.
+**How to avoid:** Store VID/PID as `u16` in Rust. JSON files use decimal numbers. Provide display formatting that shows hex. Verify the concrete values against live USB descriptors before turning them into tests or examples.
+**Warning signs:** Device JSON, roadmap text, and live `lsusb` output disagree about the same keyboard's transport identity.
 
 ### Pitfall 2: Serde camelCase Rename Mismatches
 **What goes wrong:** The reference JSON uses camelCase field names (`keyCount`, `displayName`, `keyLayoutName`) but Rust uses snake_case. Missing `#[serde(rename_all = "camelCase")]` causes silent deserialization failures where fields become None/default.
@@ -300,7 +302,7 @@ pub fn detect(device_name: Option<&str>, pid: u16) -> ProtocolFamily {
 ### Pitfall 6: M5W Data Extraction from 41MB JS Bundle
 **What goes wrong:** The M5W device data must be extracted from `firmware/MonsGeek_v4_setup_500.2.13_WIN2026032/dist/index.eb7071d5.js` -- a 41MB minified JavaScript file. Attempting to parse the entire file at once is slow and error-prone. The device definition is embedded in a JS object literal, not standalone JSON.
 **Why it happens:** MonsGeek distributes device definitions only through their Windows Electron app.
-**How to avoid:** This is a ONE-TIME manual extraction task, not a build step. Grep for known constants (VID 0x3141, device ID 1308, "Common108_MG108B") to find the relevant object. Extract and hand-convert to JSON. The result goes into `devices/m5w.json`.
+**How to avoid:** This is a ONE-TIME manual extraction task, not a build step. Grep for stable identifiers like device ID `1308` and `Common108_MG108B`, but validate the resulting USB identity against live hardware before freezing it into `devices/m5w.json`.
 **Warning signs:** Trying to automate JS parsing or treating this as a runtime dependency.
 
 ## Code Examples
@@ -432,7 +434,7 @@ pub static YICHIP_COMMANDS: CommandTable = CommandTable {
 | Req ID | Behavior | Test Type | Automated Command | File Exists? |
 |--------|----------|-----------|-------------------|-------------|
 | REG-01 | M5W device definition loads from JSON with correct VID/PID/ID/keyLayout | unit | `cargo test -p monsgeek-protocol -- test_m5w_device_definition` | Wave 0 |
-| REG-01 | M5W VID is 0x3141, PID is 0x4005, device ID is 1308 | unit | `cargo test -p monsgeek-protocol -- test_m5w_identity` | Wave 0 |
+| REG-01 | M5W wired VID is 0x3151, PID is 0x4015, device ID is 1308 | unit | `cargo test -p monsgeek-protocol -- test_m5w_identity` | Wave 0 |
 | REG-02 | Registry loads multiple devices from directory without code changes | unit | `cargo test -p monsgeek-protocol -- test_registry_extensible` | Wave 0 |
 | REG-02 | Adding a JSON file to devices/ makes it discoverable by registry | unit | `cargo test -p monsgeek-protocol -- test_add_device_json` | Wave 0 |
 | (SC-4) | FEA command constants match reference values | unit | `cargo test -p monsgeek-protocol -- test_command_constants` | Wave 0 |
@@ -458,7 +460,7 @@ pub static YICHIP_COMMANDS: CommandTable = CommandTable {
 ## Open Questions
 
 1. **M5W Device Data Extraction**
-   - What we know: The data is in `firmware/MonsGeek_v4_setup_500.2.13_WIN2026032/dist/index.eb7071d5.js` (41MB minified JS). We know the VID (0x3141), PID (0x4005), device ID (1308), key layout name (Common108_MG108B).
+   - What we know: The data is in `firmware/MonsGeek_v4_setup_500.2.13_WIN2026032/dist/index.eb7071d5.js` (41MB minified JS), but its early M5W USB-ID extraction proved unreliable. The verified facts are device ID `1308`, key layout `Common108_MG108B`, and live wired USB identity `0x3151:0x4015`.
    - What's unclear: Exact values for all optional fields (magnetism, hasSideLight, travelSetting, ledMatrix). The M5W may not have magnetic switches (it's a standard mechanical keyboard), so `magnetism` may be false and `noMagneticSwitch` may be true.
    - Recommendation: Grep the JS bundle for `1308` (device ID) and `Common108_MG108B` to find the device definition object. Extract all fields manually. For fields we cannot confirm, use reasonable defaults based on the M5W being a standard mechanical full-size keyboard (108 keys, no magnetism, has LED layout, no side light).
 

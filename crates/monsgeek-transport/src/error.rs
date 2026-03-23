@@ -96,10 +96,10 @@ mod tests {
     #[test]
     fn test_device_not_found_display() {
         let err = TransportError::DeviceNotFound {
-            vid: 0x3141,
-            pid: 0x4005,
+            vid: 0x3151,
+            pid: 0x4015,
         };
-        assert_eq!(err.to_string(), "device not found: VID 0x3141, PID 0x4005");
+        assert_eq!(err.to_string(), "device not found: VID 0x3151, PID 0x4015");
     }
 
     #[test]

@@ -24,17 +24,21 @@ pub mod bounds;
 pub mod discovery;
 pub mod error;
 pub mod flow_control;
+pub mod input;
+pub mod keycodes;
+pub mod keymap;
 pub mod thread;
 pub mod usb;
 
 pub use bounds::{validate_key_index, validate_write_request};
 pub use discovery::DeviceInfo;
 pub use error::TransportError;
+pub use input::InputProcessor;
 pub use thread::TransportEvent;
-pub use usb::UsbSession;
+pub use usb::{UsbSession, UsbVersionInfo};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use monsgeek_protocol::ChecksumType;
+use monsgeek_protocol::{ChecksumType, DeviceDefinition};
 
 /// Handle for sending commands to a connected MonsGeek keyboard.
 ///
@@ -46,9 +50,12 @@ use monsgeek_protocol::ChecksumType;
 ///
 /// ```rust,no_run
 /// use monsgeek_transport::{connect, TransportHandle};
-/// use monsgeek_protocol::ChecksumType;
+/// use monsgeek_protocol::{ChecksumType, DeviceRegistry};
+/// use std::path::Path;
 ///
-/// let (handle, events) = connect(0x3141, 0x4005).unwrap();
+/// let registry = DeviceRegistry::load_from_directory(Path::new("devices")).unwrap();
+/// let m5w = registry.find_by_id(1308).unwrap();
+/// let (handle, events) = connect(m5w).unwrap();
 /// let response = handle.send_query(0x8F, &[], ChecksumType::Bit7).unwrap();
 /// println!("Device ID bytes: {:02X?}", &response[1..5]);
 /// handle.shutdown();
@@ -140,26 +147,62 @@ impl TransportHandle {
 
 /// Connect to a MonsGeek keyboard and start the transport thread.
 ///
-/// Opens a USB session to the device at `vid`/`pid`, spawns the transport
-/// thread (which serializes all HID I/O with 100ms throttling), and optionally
-/// starts the hot-plug monitoring thread.
+/// Opens the keyboard's preferred USB VID/PID first, verifies its firmware
+/// device ID via `GET_USB_VERSION`, and falls back to probing other USB devices
+/// with the same vendor ID if the runtime PID differs from the registry's
+/// primary PID. Once the matching keyboard is found, this opens a USB session,
+/// spawns the transport thread (which serializes all HID I/O with 100ms
+/// throttling), and starts the hot-plug monitoring thread.
 ///
 /// Returns `(TransportHandle, Receiver<TransportEvent>)`. The handle is used
 /// to send commands; the receiver emits hot-plug lifecycle events.
 ///
 /// # Errors
 ///
-/// Returns `TransportError::DeviceNotFound` if no device matches `vid`/`pid`.
+/// Returns `TransportError::DeviceNotFound` if no connected USB device matches
+/// the definition's firmware device ID.
 /// Returns `TransportError::Usb` on USB open/claim failure.
-pub fn connect(vid: u16, pid: u16) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
-    let session = UsbSession::open(vid, pid)?;
+pub fn connect(device: &DeviceDefinition) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
+    let session = open_matching_session(device)?;
     let (cmd_tx, cmd_rx) = bounded(monsgeek_protocol::timing::dongle::REQUEST_QUEUE_SIZE);
     let (event_tx, event_rx) = bounded(32);
 
     thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session);
-    thread::spawn_hotplug_thread(event_tx);
+    thread::spawn_hotplug_thread(event_tx, device.vid);
 
     Ok((TransportHandle { cmd_tx }, event_rx))
+}
+
+fn open_matching_session(device: &DeviceDefinition) -> Result<UsbSession, TransportError> {
+    let primary = UsbSession::open(device.vid, device.pid);
+
+    match primary {
+        Ok(session) => {
+            let usb_version = session.query_usb_version()?;
+            if usb_version.device_id_i32() == device.id {
+                return Ok(session);
+            }
+
+            log::warn!(
+                "USB: preferred VID 0x{:04X} PID 0x{:04X} reported device ID {} instead of {}. Probing by firmware ID.",
+                device.vid,
+                device.pid,
+                usb_version.device_id,
+                device.id
+            );
+        }
+        Err(TransportError::DeviceNotFound { .. }) => {
+            log::info!(
+                "USB: preferred VID 0x{:04X} PID 0x{:04X} not present. Probing by firmware ID.",
+                device.vid,
+                device.pid
+            );
+        }
+        Err(err) => return Err(err),
+    }
+
+    let info = discovery::probe_device(device)?;
+    UsbSession::open_at(info.bus, info.address)
 }
 
 #[cfg(test)]
@@ -177,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_connect_exists_with_correct_signature() {
-        let _fn_ptr: fn(u16, u16) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect;
+        let _fn_ptr: fn(&DeviceDefinition) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect;
     }
 
     #[test]

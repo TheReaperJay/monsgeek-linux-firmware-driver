@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn test_detect_yichip_by_name() {
         assert_eq!(
-            ProtocolFamily::detect(Some("yc3121_m5w_soc"), 0x4005),
+            ProtocolFamily::detect(Some("yc3121_m5w_soc"), 0x4015),
             ProtocolFamily::YiChip
         );
     }

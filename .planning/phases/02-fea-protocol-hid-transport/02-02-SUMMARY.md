@@ -17,7 +17,7 @@ provides:
   - thread::CommandRequest for channel-based command dispatch
   - thread::TransportEvent enum (DeviceArrived, DeviceLeft) for hot-plug lifecycle
   - thread::spawn_transport_thread with 100ms inter-command throttling via Instant tracking
-  - thread::spawn_hotplug_thread with HotplugBuilder filtered to VID 0x3141
+  - thread::spawn_hotplug_thread with hot-plug monitoring later corrected to `udev`
   - TransportHandle (Clone) with send_query, send_fire_and_forget, shutdown
   - connect() factory returning (TransportHandle, Receiver<TransportEvent>)
 
@@ -25,7 +25,7 @@ affects: [02-03, phase-3, phase-7]
 
 tech-stack:
   added: []
-  patterns: [echo-byte-matching-retry-loop, dedicated-transport-thread-with-channel, hotplug-callback-event-only, instant-based-throttling]
+  patterns: [echo-byte-matching-retry-loop, dedicated-transport-thread-with-channel, instant-based-throttling, hotplug-source-corrected-later]
 
 key-files:
   created:
@@ -38,13 +38,13 @@ key-files:
 key-decisions:
   - "query_command sleeps DEFAULT_DELAY_MS (100ms) between SET_REPORT and GET_REPORT inside the retry loop, giving firmware time to prepare the response"
   - "Transport thread tracks Instant::now() for inter-command throttling rather than sleeping after every command -- only sleeps the remaining delta when commands arrive too fast"
-  - "HotplugWatcher only calls device_descriptor() and sends events via channel -- no DeviceHandle methods in callbacks (per rusb safety constraints)"
+  - "Hot-plug planning was later corrected from libusb callbacks to `udev` monitoring after host-side validation"
   - "DeviceRegistry API uses find_by_vid_pid (returns Vec<&DeviceDefinition>) not get_by_vid_pid -- corrected from plan interface spec"
 
 patterns-established:
   - "Channel-based transport API: callers send CommandRequest via crossbeam channel, transport thread serializes all USB I/O"
   - "Echo matching: response[0] == cmd_byte validates firmware responded to the correct command"
-  - "Hot-plug via rusb::HotplugBuilder with VID filter and enumerate(true) for initial device detection"
+  - "Hot-plug source later corrected to `udev`"
 
 requirements-completed: [HID-01, HID-02, HID-03, HID-04]
 
@@ -54,7 +54,9 @@ completed: 2026-03-19
 
 # Phase 02 Plan 02: Flow Control and Transport Thread Summary
 
-**Echo-matched query with 5-retry loop, fire-and-forget send with 3-retry, dedicated transport thread enforcing 100ms inter-command throttling, hot-plug monitoring for VID 0x3141, and channel-based TransportHandle API**
+> Historical correction (2026-03-23): this summary predates host-side validation of hot-plug and identity behavior. The current planning truth is `udev` hot-plug, firmware-ID-aware discovery, and corrected M5W wired identity `0x3151:0x4015`.
+
+**Echo-matched query with 5-retry loop, fire-and-forget send with 3-retry, dedicated transport thread enforcing 100ms inter-command throttling, corrected `udev` hot-plug direction, and channel-based TransportHandle API**
 
 ## Performance
 
@@ -67,7 +69,7 @@ completed: 2026-03-19
 ## Accomplishments
 - Flow control layer implements echo-matched query (5 retries) and fire-and-forget send (3 retries), both skipping report ID byte via `&frame[1..]` per the 65/64-byte convention
 - Dedicated transport thread serializes all HID I/O through a single OS thread with 100ms minimum inter-command delay (Instant-based throttling)
-- Hot-plug monitoring thread uses rusb HotplugBuilder filtered to MonsGeek VID 0x3141, with safety-compliant callbacks that only send events via channel
+- Hot-plug behavior was later corrected to the `udev` model after host-side validation
 - TransportHandle provides a Clone-able, channel-based API for Phase 3 (gRPC) and Phase 7 (CLI) consumers
 - Device discovery enumerates USB devices against DeviceRegistry, producing DeviceInfo structs
 - 116 total tests pass across workspace (73 protocol + 42 transport + 1 doc-test)
@@ -87,13 +89,13 @@ Each task was committed atomically (TDD: RED then GREEN):
 ## Files Created/Modified
 - `crates/monsgeek-transport/src/flow_control.rs` - Echo-matched query_command (5 retries) and fire-and-forget send_command (3 retries), both using build_command and vendor_set/get_report
 - `crates/monsgeek-transport/src/discovery.rs` - DeviceInfo struct and enumerate_devices matching USB devices against DeviceRegistry
-- `crates/monsgeek-transport/src/thread.rs` - CommandRequest, TransportEvent, spawn_transport_thread (throttled command loop), spawn_hotplug_thread (HotplugBuilder with VID filter), HotplugWatcher
+- `crates/monsgeek-transport/src/thread.rs` - CommandRequest, TransportEvent, spawn_transport_thread (throttled command loop), spawn_hotplug_thread
 - `crates/monsgeek-transport/src/lib.rs` - TransportHandle (send_query, send_fire_and_forget, shutdown), connect() factory, module declarations and re-exports
 
 ## Decisions Made
 - query_command sleeps 100ms between SET_REPORT and GET_REPORT inside the retry loop to give firmware time to prepare the response -- the transport thread also throttles 100ms between consecutive commands, but query_command needs an additional intra-command delay
 - Transport thread uses Instant::now()-based delta throttling rather than unconditional sleep -- more efficient when commands arrive with natural spacing
-- HotplugWatcher implements rusb::Hotplug<T> generically over UsbContext but only calls device_descriptor() (safe) in callbacks -- no DeviceHandle methods (read_control, write_control) per rusb documentation and RESEARCH Pitfall 5
+- Hot-plug approach was later corrected away from libusb callbacks and toward `udev` monitoring
 - Corrected plan's interface spec: DeviceRegistry uses `find_by_vid_pid` (returns `Vec<&DeviceDefinition>`) and `find_by_id` (returns `Option<&DeviceDefinition>`), not `get_by_vid_pid`/`get` as written in the plan
 
 ## Deviations from Plan
@@ -108,13 +110,11 @@ Each task was committed atomically (TDD: RED then GREEN):
 - **Verification:** `cargo test -p monsgeek-transport` passes
 - **Committed in:** d6f8b11
 
-**2. [Rule 3 - Blocking] Added explicit type annotation for rusb::Registration**
-- **Found during:** Task 2 (hot-plug registration)
-- **Issue:** Rust type inference could not resolve the `Registration<_>` type parameter from the `HotplugBuilder::register` call context
-- **Fix:** Added explicit type annotation `let _registration: rusb::Registration<rusb::Context>`
-- **Files modified:** crates/monsgeek-transport/src/thread.rs
-- **Verification:** `cargo test -p monsgeek-transport` compiles and passes
-- **Committed in:** 806f907
+**2. [Historical correction] Hot-plug implementation direction changed after real host validation**
+- **Found during:** later Phase 2 hardware validation
+- **Issue:** libusb arrival callbacks were not reliable enough on the target Linux host
+- **Fix:** planning truth updated to `udev`-based hot-plug monitoring
+- **Files modified:** planning docs and transport implementation
 
 ---
 

@@ -1,89 +1,116 @@
-# MonsGeek Linux Driver & Configurator Bridge
+# Linux FEA Keyboard Framework & Configurator Bridge
 
 ## What This Is
 
-A standalone Linux driver and configuration bridge for MonsGeek keyboards using the yc3121 SoC (VID `0x3141`). It enables full keyboard configuration — key remapping, RGB lighting, macros, firmware updates, debounce tuning, and profile management — on Linux, where MonsGeek officially supports only Windows and macOS. The primary target is the MonsGeek M5W, with extensibility for all yc3121-based MonsGeek boards.
+A Linux userspace framework and compatibility bridge for FEA-based keyboards, starting with the MonsGeek M5W as the first fully verified target. The immediate user-facing goal is to make the existing MonsGeek configurator work on Linux without requiring Windows. The broader engineering goal is a transport and profile architecture that can support other MonsGeek and Akko devices that share the FEA protocol once their transport details and feature profiles are validated.
+
+The project is organized around three layers:
+
+- `monsgeek-protocol`: protocol constants, checksums, command tables, device/profile data
+- `monsgeek-transport`: raw USB HID transport, flow control, discovery, and hot-plug
+- bridge / CLI layer: gRPC-Web compatibility bridge for the configurator and direct operator tooling
 
 ## Core Value
 
-The MonsGeek configurator must work on Linux — enabling the user to configure, tune, and flash their keyboard without ever needing a Windows machine.
+The MonsGeek configurator must work on Linux, enabling users to configure, tune, and eventually flash supported keyboards without ever needing a Windows machine.
 
 ## Requirements
 
-### Validated
+- The project must provide a safe Linux transport layer for FEA keyboards that tolerates known firmware and kernel-probe quirks.
+- The project must expose a local compatibility bridge that matches the MonsGeek configurator's expected gRPC-Web contract on `localhost:3814`.
+- The registry and profile model must stay data-driven so adding supported devices does not require scattered runtime constants.
+- Device identity must resolve by firmware device ID plus transport classification, not by USB PID alone.
 
-- [x] Extensible device registry for adding other yc3121-based MonsGeek keyboards — *Validated in Phase 01: project-scaffolding-device-registry*
-- [x] Full FEA command protocol constants and checksum algorithms — *Validated in Phase 01: project-scaffolding-device-registry*
+## Validated So Far
 
-### Active
+- JSON-driven device/profile registry foundation exists and compiles
+- Wired M5W transport works on Linux via `rusb` HID control transfers on `IF2`
+- `GET_USB_VERSION` works on real hardware and returns device ID `1308`
+- `GET_USB_VERSION` device identity is a 32-bit little-endian field, not 16-bit
+- The transport layer enforces the 100ms firmware safety delay
+- Hot-plug detection works via `udev`
+- Short-lived transport sessions can return `IF0` to the kernel so the keyboard keeps typing after tests
 
-- [ ] gRPC-Web bridge server that serves HID commands on localhost:3814, allowing the MonsGeek web/Electron configurator to communicate with the keyboard
-- [ ] HID device detection and enumeration for yc3121-based keyboards (VID 0x3141)
-- [ ] Full FEA command protocol implementation (send/receive with Bit7 checksums) — constants and checksums done; encoding/transport pending
-- [ ] Key remapping via SET/GET_KEYMATRIX commands
-- [ ] RGB/LED control via SET/GET_LEDPARAM commands
-- [ ] Macro programming via SET/GET_MACRO commands
-- [ ] Profile management (4 profiles) via SET/GET_PROFILE commands
-- [ ] Polling rate and debounce configuration via SET/GET_REPORT and SET/GET_DEBOUNCE
-- [ ] Firmware update capability (bootloader entry, chunk transfer, CRC-24 verification)
-- [ ] Fix ghosting/double-letter issues on Linux (likely via debounce/polling config; eBPF driver if needed)
-- [ ] Extensible device registry for adding other yc3121-based MonsGeek keyboards
-- [ ] udev rules for non-root HID access on Linux
+## Active Work
 
-### Out of Scope
+- Finish Phase 2 cleanly by splitting transport ownership modes:
+  - control mode: claim `IF2` only and preserve kernel-managed typing on `IF0`
+  - full userspace-input mode: intentionally own `IF0` and translate input ourselves
+- Implement the gRPC-Web bridge on `localhost:3814` so the MonsGeek configurator can talk to Linux
+- Verify feature families on real hardware: remapping, lighting, debounce/polling, macros, and device-specific advanced capabilities
+- Keep the registry/profile system data-driven so new supported keyboards do not require hardcoded runtime constants
 
-- Bluetooth LE transport — M5W is wired/2.4GHz; BLE support deferred
-- 2.4GHz dongle transport — wired USB first; dongle support is a future milestone
-- GUI application — the bridge enables the existing MonsGeek web configurator; no custom GUI
-- Windows/macOS support — this is a Linux-only solution
-- Akko keyboard support — different VID (0x3151), different firmware; the Akko reference project handles those
-- Audio-reactive LEDs, screen color sync — advanced features from reference project; not in v1
+## Deferred But Planned
+
+- 2.4GHz dongle transport for M5W and related devices
+- Additional validated device profiles beyond the M5W
+- Firmware flashing with explicit safety gates
+- Optional CLI and systemd packaging after the bridge is working
+
+## Out of Scope
+
+- A custom GUI application
+- Windows or macOS runtime support
+- Bluetooth LE transport in the current milestone
+- Making unsupported promises for unverified devices or transports
 
 ## Context
 
-**Reference materials available in this repo:**
+### Key References In This Repo
 
-- `references/monsgeek-akko-linux/` — A complete Rust implementation for Akko keyboards (AT32F405/VID 0x3151) using the same FEA command protocol. This project demonstrates the gRPC-Web bridge architecture, transport abstractions, eBPF HID driver, and full protocol implementation. It is reference only — not a dependency.
+- `references/monsgeek-hid-driver/`
+  - Primary reference for the exact M5W hardware target
+  - Shows reset-then-reopen, IF0/IF1/IF2 claiming, and raw `rusb` control transfers
 
-- `firmware/MonsGeek_v4_setup_500.2.13_WIN2026032/` — The extracted MonsGeek Windows Electron app (v500.2.13). Contains:
-  - `iot_driver.exe` — the Windows HID communication binary
-  - `dist/index.eb7071d5.js` — 41MB minified React app with all device definitions, FEA commands, and key matrices
-  - `APPVersion.json`, `CurrentCompany.json`, device configuration
+- `references/monsgeek-akko-linux/`
+  - Stronger architectural reference for the broader FEA family
+  - Shows transport layering, gRPC-Web bridge structure, profile registry patterns, and dongle support concepts
+  - Must be relied on for architecture and protocol-family modeling, not blindly copied
 
-- `firmware/m5w_firmware_v103.bin` — M5W firmware binary (v1.03, 277KB)
+- `firmware/MonsGeek_v4_setup_500.2.13_WIN2026032/`
+  - Extracted Windows/Electron application
+  - Useful for device data, protocol behavior, and app/bridge expectations
 
-**M5W device specifics:**
-- Device ID: 1308
-- VID: 0x3141, PID: 0x4005
-- SoC: yc3121 ("yc3121_m5w_soc")
-- Key layout: Common108_MG108B
-- HID interface: IF2 vendor config (Feature Reports, 64 bytes)
+- `firmware/m5w_firmware_v103.bin`
+  - M5W firmware image for later analysis and firmware-management work
 
-**Known Linux issues:**
-- Ghosting and double-letter input during normal typing — likely a debounce/polling rate issue solvable via configuration
-- No HID access for vendor-specific features — Linux kernel's generic HID driver handles basic input but cannot access IF2 for configuration
-- MonsGeek web configurator cannot reach the keyboard without the `iot_driver.exe` bridge
+### Verified M5W Facts
 
-**Protocol compatibility:**
-- The yc3121 keyboards use the same FEA command protocol structure as the AT32F405 (Akko) keyboards: same command opcodes, same Bit7 checksum, same 64-byte report format
-- Key differences: different VID (0x3141 vs 0x3151), different device IDs, potentially different key matrices and feature sets
+- Firmware device ID: `1308`
+- Wired USB identity: VID `0x3151`, PID `0x4015`
+- 2.4GHz dongle identity: VID `0x3151`, PID `0x4011`
+- SoC family: `yc3121`
+- Key layout: `Common108_MG108B`
+- Transport interface: `IF2` vendor HID feature reports, 64-byte payloads
+
+### Verified Linux / Firmware Constraints
+
+- The firmware crashes or stalls if commands arrive faster than 100ms apart
+- IF1 and IF2 have broken report-descriptor behavior during kernel probing
+- `GET_USB_VERSION` is the right identity probe and carries a 32-bit device ID
+- USB bus and address are runtime-discovered and must never be hardcoded
+- USB PID is transport identity, not canonical model identity
+- `libusb` arrival callbacks were not reliable enough on this Linux setup; `udev` is the practical hot-plug source
 
 ## Constraints
 
-- **Platform**: Linux only — no Windows machine available; must work on Fedora (kernel 6.19+)
-- **Architecture**: Standalone — must not depend on the monsgeek-akko-linux project at runtime; reference for protocol knowledge only
-- **Extensibility**: Device registry must support adding new yc3121 keyboards by adding device definitions, not code changes
-- **Compatibility**: Must work with the existing MonsGeek web configurator (app.monsgeek.com) or Electron app via the gRPC-Web bridge on localhost:3814
-- **Safety**: Firmware flashing is destructive (bootloader erases app region before USB init); must have explicit user confirmation and validation before entering bootloader mode
+- **Platform:** Linux only, validated on Fedora
+- **Architecture:** standalone project, no runtime dependency on the reference projects
+- **Identity model:** supported devices should resolve by firmware device ID plus transport classification, not PID alone
+- **Extensibility:** new supported keyboards should be added through profile/registry data plus bounded transport classification, not scattered constants
+- **Compatibility:** the local bridge must match the MonsGeek configurator's expected gRPC-Web contract
+- **Safety:** firmware update remains high-risk and must stay behind explicit validation and user confirmation
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Rust for implementation | Same language as reference project; direct HID access via hidapi; gRPC via tonic; proven approach | — Pending |
-| gRPC-Web bridge on :3814 | The MonsGeek web app expects this endpoint; matching it enables zero-modification browser compatibility | — Pending |
-| Configurator-first priority | Fixing typing issues (ghosting/double-letters) likely achievable by tuning debounce/polling via configurator; eliminates need for kernel driver if successful | — Pending |
-| eBPF HID driver deferred | Only needed if configurator-based debounce/polling adjustments don't resolve typing issues; reference project shows how to implement if needed | — Pending |
+| `rusb` for MonsGeek transport | The M5W's Linux behavior is defined by raw USB/HID control transfers and broken descriptor probing; `hidapi`/hidraw assumptions are not the reliable source of truth here | Active |
+| gRPC-Web bridge on `127.0.0.1:3814` | The configurator expects a local bridge that matches the Windows `iot_driver.exe` behavior | Planned |
+| Firmware device ID is canonical identity | USB PID varies by transport and is not sufficient as the framework-wide model identifier | Active |
+| `udev` for hot-plug | Verified to be more reliable than `libusb` arrival callbacks in this environment | Active |
+| Preserve kernel typing unless intentionally taking ownership | Short-lived transport sessions must not leave the keyboard dead; long-lived sessions need an explicit mode choice | Active |
+| M5W first, framework-general architecture | The M5W is the first verified target, but the code should not hardcode MonsGeek-only assumptions if the FEA family can share abstractions | Active |
 
 ---
-*Last updated: 2026-03-19 — Phase 01 complete (workspace scaffold, device registry, protocol constants)*
+*Last updated: 2026-03-23 — corrected after real hardware validation of Phase 2 transport behavior*
