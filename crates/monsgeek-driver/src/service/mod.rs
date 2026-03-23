@@ -46,7 +46,6 @@ pub struct DriverService {
     device_tx: broadcast::Sender<DeviceList>,
     db: DbStore,
     runtime_started: Arc<AtomicBool>,
-    startup_scan_done: Arc<AtomicBool>,
 }
 
 impl DriverService {
@@ -67,45 +66,7 @@ impl DriverService {
             device_tx,
             db: DbStore::new(),
             runtime_started: Arc::new(AtomicBool::new(false)),
-            startup_scan_done: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    fn ensure_runtime_started(&self) {
-        if self
-            .runtime_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return;
-        }
-        let service = self.clone();
-        std::thread::spawn(move || {
-            let discovered = match monsgeek_transport::discovery::probe_devices(&service.registry) {
-                Ok(list) => list,
-                Err(err) => {
-                    tracing::warn!("initial probe failed: {}", err);
-                    Vec::new()
-                }
-            };
-
-            let selected = select_preferred_infos(&service.registry, discovered);
-            for info in &selected {
-                if let Some(definition) = service.registry.find_by_id(info.device_id) {
-                    service
-                        .path_registry
-                        .lock()
-                        .expect("path registry poisoned")
-                        .register(info.vid, info.pid, definition.id, info.bus, info.address);
-                }
-            }
-            service.startup_scan_done.store(true, Ordering::SeqCst);
-
-            for info in selected {
-                // Startup scan opens transports in background after Init is available.
-                service.connect_and_register(info, false);
-            }
-        });
     }
 
     fn connect_and_register(&self, info: DeviceInfo, emit_add: bool) {
@@ -181,6 +142,59 @@ impl DriverService {
                 r#type: DeviceListChangeType::Add as i32,
             });
         }
+    }
+
+    /// Reference-style scan used by watchDevList:
+    /// list devices first (fast), then attempt transport bootstrap in background.
+    async fn scan_devices(&self) -> Vec<DjDev> {
+        let fast = match monsgeek_transport::discovery::enumerate_devices(&self.registry) {
+            Ok(found) => found,
+            Err(err) => {
+                tracing::warn!("fast enumerate failed: {}", err);
+                Vec::new()
+            }
+        };
+
+        let selected = if fast.is_empty() {
+            match monsgeek_transport::discovery::probe_devices(&self.registry) {
+                Ok(found) => select_preferred_infos(&self.registry, found),
+                Err(err) => {
+                    tracing::warn!("probe fallback failed: {}", err);
+                    Vec::new()
+                }
+            }
+        } else {
+            select_preferred_infos(&self.registry, fast)
+        };
+
+        let should_bootstrap = self
+            .runtime_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+
+        let mut result = Vec::new();
+        for info in selected {
+            let Some(definition) = self.registry.find_by_id(info.device_id) else {
+                continue;
+            };
+
+            let registration = self
+                .path_registry
+                .lock()
+                .expect("path registry poisoned")
+                .register(info.vid, info.pid, definition.id, info.bus, info.address);
+
+            result.push(registration_to_djdev(registration.clone()));
+
+            if should_bootstrap {
+                let service = self.clone();
+                std::thread::spawn(move || {
+                    service.connect_and_register(info, false);
+                });
+            }
+        }
+
+        result
     }
 
     fn spawn_transport_event_loop(
@@ -285,7 +299,17 @@ impl DriverService {
     }
 
     async fn open_device(&self, path: &str) -> Result<(), Status> {
-        self.ensure_runtime_started();
+        if self
+            .devices
+            .lock()
+            .expect("devices map poisoned")
+            .contains_key(path)
+        {
+            return Ok(());
+        }
+
+        // Keep path registry up to date and kick off first-time bootstrap if needed.
+        let _ = self.scan_devices().await;
 
         if self
             .devices
@@ -518,43 +542,8 @@ impl DriverGrpc for DriverService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::watchDevListStream>, Status> {
-        // Subscribe first so no hot-plug deltas are lost while startup discovery runs.
+        let initial_devs = self.scan_devices().await;
         let rx = self.device_tx.subscribe();
-        self.ensure_runtime_started();
-
-        // Give first discovery scan a bounded window so Init carries current devices.
-        // This matches webapp expectation of Init containing present devices.
-        if !self.startup_scan_done.load(Ordering::SeqCst) {
-            for _ in 0..80 {
-                if self.startup_scan_done.load(Ordering::SeqCst) {
-                    break;
-                }
-                if !self
-                    .devices
-                    .lock()
-                    .expect("devices map poisoned")
-                    .is_empty()
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        }
-
-        let initial_devs: Vec<DjDev> = {
-            let devices = self.devices.lock().expect("devices map poisoned");
-            if devices.is_empty() {
-                self.path_registry
-                    .lock()
-                    .expect("path registry poisoned")
-                    .list()
-                    .into_iter()
-                    .map(registration_to_djdev)
-                    .collect()
-            } else {
-                devices.values().map(|d| device_to_djdev(d, true)).collect()
-            }
-        };
         let initial_list = DeviceList {
             dev_list: initial_devs,
             r#type: DeviceListChangeType::Init as i32,
