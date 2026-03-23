@@ -146,14 +146,14 @@ pub const HID_TO_LINUX: [u16; 256] = {
 /// Index 0 = Left Ctrl (bit 0 of HID modifier byte), etc.
 /// Matches monsgeek_hid.py MODIFIER_MAP (hardware-verified).
 pub const MODIFIER_KEYCODES: [u16; 8] = [
-    keycodes::KEY_LEFTCTRL,  // Bit 0
-    keycodes::KEY_LEFTSHIFT, // Bit 1
-    keycodes::KEY_LEFTALT,   // Bit 2
-    keycodes::KEY_LEFTMETA,  // Bit 3
-    keycodes::KEY_RIGHTCTRL, // Bit 4
+    keycodes::KEY_LEFTCTRL,   // Bit 0
+    keycodes::KEY_LEFTSHIFT,  // Bit 1
+    keycodes::KEY_LEFTALT,    // Bit 2
+    keycodes::KEY_LEFTMETA,   // Bit 3
+    keycodes::KEY_RIGHTCTRL,  // Bit 4
     keycodes::KEY_RIGHTSHIFT, // Bit 5
-    keycodes::KEY_RIGHTALT,  // Bit 6
-    keycodes::KEY_RIGHTMETA, // Bit 7
+    keycodes::KEY_RIGHTALT,   // Bit 6
+    keycodes::KEY_RIGHTMETA,  // Bit 7
 ];
 
 /// Yields all unique non-zero keycodes from HID_TO_LINUX and MODIFIER_KEYCODES.
@@ -305,7 +305,8 @@ mod tests {
         for (i, hid) in (0x68..=0x73_usize).enumerate() {
             let expected = 183 + i as u16;
             assert_eq!(
-                HID_TO_LINUX[hid], expected,
+                HID_TO_LINUX[hid],
+                expected,
                 "HID 0x{hid:02X}: expected {expected} (F{}), got {}",
                 13 + i,
                 HID_TO_LINUX[hid]

@@ -1,5 +1,5 @@
-use monsgeek_driver::pb::driver::driver_grpc_server::DriverGrpcServer;
 use monsgeek_driver::DriverService;
+use monsgeek_driver::pb::driver::driver_grpc_server::DriverGrpcServer;
 use tonic::transport::Server;
 use tower_http::cors::{Any, CorsLayer};
 

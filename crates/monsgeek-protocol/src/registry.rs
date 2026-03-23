@@ -53,10 +53,7 @@ impl DeviceRegistry {
         let id = device.id;
         let vid_pid = (device.vid, device.pid);
 
-        self.devices_by_vid_pid
-            .entry(vid_pid)
-            .or_default()
-            .push(id);
+        self.devices_by_vid_pid.entry(vid_pid).or_default().push(id);
         self.devices_by_id.insert(id, device);
     }
 
@@ -148,11 +145,7 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         // Copy M5W
-        fs::write(
-            tmp.join("m5w.json"),
-            include_str!("../devices/m5w.json"),
-        )
-        .unwrap();
+        fs::write(tmp.join("m5w.json"), include_str!("../devices/m5w.json")).unwrap();
 
         // Add a fictional second device
         fs::write(

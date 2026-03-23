@@ -123,13 +123,11 @@ fn test_reset_then_reopen_clears_stall() {
         buf[0]
     );
 
-    let usb_version = UsbVersionInfo::parse(&buf)
-        .expect("failed to parse GET_USB_VERSION response");
+    let usb_version =
+        UsbVersionInfo::parse(&buf).expect("failed to parse GET_USB_VERSION response");
     println!(
         "\nDevice ID: {} (0x{:08X}), firmware version: 0x{:04X}",
-        usb_version.device_id,
-        usb_version.device_id,
-        usb_version.firmware_version
+        usb_version.device_id, usb_version.device_id, usb_version.firmware_version
     );
     println!("\n=== PASS: reset-then-reopen clears STALL, IF2 control transfers work ===");
 

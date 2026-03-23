@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry};
-use monsgeek_transport::{connect, validate_write_request, TransportEvent, UsbVersionInfo};
+use monsgeek_transport::{TransportEvent, UsbVersionInfo, connect, validate_write_request};
 
 const M5W_DEVICE_ID: i32 = 1308;
 
@@ -81,8 +81,8 @@ fn test_enumerate_m5w() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
     let m5w_def = load_m5w(&registry);
-    let devices = monsgeek_transport::discovery::probe_devices(&registry)
-        .expect("probe_devices failed");
+    let devices =
+        monsgeek_transport::discovery::probe_devices(&registry).expect("probe_devices failed");
 
     assert!(
         !devices.is_empty(),
@@ -112,8 +112,7 @@ fn test_get_usb_version() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
     let m5w = load_m5w(&registry);
-    let (handle, _events) = connect(m5w)
-        .expect("failed to connect to M5W");
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
 
     let response = handle
         .send_query(0x8F, &[], ChecksumType::Bit7)
@@ -127,14 +126,12 @@ fn test_get_usb_version() {
 
     println!("GET_USB_VERSION response: {:02X?}", &response[..16]);
 
-    let usb_version = UsbVersionInfo::parse(&response)
-        .expect("failed to parse GET_USB_VERSION response");
+    let usb_version =
+        UsbVersionInfo::parse(&response).expect("failed to parse GET_USB_VERSION response");
     assert_eq!(usb_version.device_id_i32(), M5W_DEVICE_ID);
     println!(
         "Parsed device ID: {} (0x{:08X}), firmware version: 0x{:04X}",
-        usb_version.device_id,
-        usb_version.device_id,
-        usb_version.firmware_version
+        usb_version.device_id, usb_version.device_id, usb_version.firmware_version
     );
 
     handle.shutdown();
@@ -150,8 +147,7 @@ fn test_throttle_rapid_commands() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
     let m5w = load_m5w(&registry);
-    let (handle, _events) = connect(m5w)
-        .expect("failed to connect to M5W");
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
 
     let start = Instant::now();
     let command_count = 5;
@@ -162,7 +158,8 @@ fn test_throttle_rapid_commands() {
             .unwrap_or_else(|e| panic!("GET_USB_VERSION query {} failed: {}", i + 1, e));
 
         assert_eq!(
-            response[0], 0x8F,
+            response[0],
+            0x8F,
             "echo mismatch on query {}: expected 0x8F, got 0x{:02X}",
             i + 1,
             response[0]
@@ -200,8 +197,7 @@ fn test_echo_matching() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
     let m5w = load_m5w(&registry);
-    let (handle, _events) = connect(m5w)
-        .expect("failed to connect to M5W");
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
 
     // Command 1: GET_USB_VERSION (0x8F) -- shared across protocol families.
     let response1 = handle
@@ -230,7 +226,10 @@ fn test_echo_matching() {
         get_debounce_cmd, response2[0]
     );
 
-    println!("Echo matching verified for 0x8F and 0x{:02X}", get_debounce_cmd);
+    println!(
+        "Echo matching verified for 0x8F and 0x{:02X}",
+        get_debounce_cmd
+    );
 
     handle.shutdown();
 }
@@ -428,8 +427,7 @@ fn z_test_hot_plug_detection() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let registry = load_registry();
     let m5w = load_m5w(&registry);
-    let (handle, event_rx) = connect(m5w)
-        .expect("failed to connect to M5W");
+    let (handle, event_rx) = connect(m5w).expect("failed to connect to M5W");
 
     println!("Hot-plug test: please unplug and replug the M5W keyboard within 30 seconds");
 
@@ -444,7 +442,12 @@ fn z_test_hot_plug_detection() {
                 println!("DeviceLeft detected: bus {} addr {}", bus, address);
                 saw_left = true;
             }
-            Ok(TransportEvent::DeviceArrived { vid, pid, bus, address }) => {
+            Ok(TransportEvent::DeviceArrived {
+                vid,
+                pid,
+                bus,
+                address,
+            }) => {
                 println!(
                     "DeviceArrived detected: VID 0x{:04X} PID 0x{:04X} bus {} addr {}",
                     vid, pid, bus, address
@@ -455,7 +458,10 @@ fn z_test_hot_plug_detection() {
                 }
             }
             Ok(TransportEvent::InputActions { actions }) => {
-                println!("InputActions observed during hot-plug test: {} actions", actions.len());
+                println!(
+                    "InputActions observed during hot-plug test: {} actions",
+                    actions.len()
+                );
             }
             Err(_) => {
                 // Timeout on recv -- continue waiting until deadline.
@@ -466,9 +472,13 @@ fn z_test_hot_plug_detection() {
     if saw_left && saw_arrived {
         println!("Hot-plug detection: PASS (DeviceLeft + DeviceArrived observed)");
     } else if saw_left {
-        println!("Hot-plug detection: PARTIAL (DeviceLeft observed, but DeviceArrived not seen before timeout)");
+        println!(
+            "Hot-plug detection: PARTIAL (DeviceLeft observed, but DeviceArrived not seen before timeout)"
+        );
     } else {
-        println!("Hot-plug detection: SKIPPED (no unplug detected within 30s -- manual interaction required)");
+        println!(
+            "Hot-plug detection: SKIPPED (no unplug detected within 30s -- manual interaction required)"
+        );
     }
 
     handle.shutdown();

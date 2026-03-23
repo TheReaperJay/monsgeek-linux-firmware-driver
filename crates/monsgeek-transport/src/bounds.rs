@@ -42,14 +42,12 @@ pub fn validate_write_request(
     key_index: u16,
     layer: u8,
 ) -> Result<(), TransportError> {
-    let max_keys = device
-        .key_count
-        .ok_or(TransportError::BoundsViolation {
-            key_index,
-            max_keys: 0,
-            layer,
-            max_layers: 0,
-        })? as u16;
+    let max_keys = device.key_count.ok_or(TransportError::BoundsViolation {
+        key_index,
+        max_keys: 0,
+        layer,
+        max_layers: 0,
+    })? as u16;
     let max_layers = device.layer.ok_or(TransportError::BoundsViolation {
         key_index,
         max_keys,
@@ -190,10 +188,7 @@ mod tests {
 
     #[test]
     fn test_udev_rules_file_exists() {
-        let rules_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/deploy/99-monsgeek.rules"
-        );
+        let rules_path = concat!(env!("CARGO_MANIFEST_DIR"), "/deploy/99-monsgeek.rules");
         let content = std::fs::read_to_string(rules_path)
             .unwrap_or_else(|e| panic!("udev rules file missing at {}: {}", rules_path, e));
 

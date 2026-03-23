@@ -13,7 +13,7 @@
 use std::time::Duration;
 
 use monsgeek_protocol::timing;
-use monsgeek_protocol::{build_command, ChecksumType};
+use monsgeek_protocol::{ChecksumType, build_command};
 
 use crate::error::TransportError;
 use crate::usb::UsbSession;

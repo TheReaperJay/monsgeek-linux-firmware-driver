@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use monsgeek_protocol::timing;
 use monsgeek_protocol::ChecksumType;
+use monsgeek_protocol::timing;
 
 use crate::error::TransportError;
 use crate::flow_control;
@@ -28,10 +28,21 @@ pub(crate) struct CommandRequest {
     pub data: Vec<u8>,
     /// Checksum type for frame construction.
     pub checksum: ChecksumType,
-    /// If true, perform echo-matched query (send + read). If false, fire-and-forget (send only).
-    pub is_query: bool,
+    /// Command operation mode.
+    pub mode: CommandMode,
     /// One-shot channel to send the result back to the caller.
     pub response_tx: Sender<Result<Option<[u8; 64]>, TransportError>>,
+}
+
+/// Command operation type used by the transport thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandMode {
+    /// Send command and read echo-matched response.
+    Query,
+    /// Send command without reading a response.
+    Send,
+    /// Read one pending feature report response.
+    Read,
 }
 
 /// Events emitted by the transport layer for device lifecycle and optional
@@ -49,14 +60,9 @@ pub enum TransportEvent {
         address: u8,
     },
     /// A USB device was disconnected from the bus.
-    DeviceLeft {
-        bus: u8,
-        address: u8,
-    },
+    DeviceLeft { bus: u8, address: u8 },
     /// Translated key actions from IF0 when userspace-input mode is active.
-    InputActions {
-        actions: Vec<KeyAction>,
-    },
+    InputActions { actions: Vec<KeyAction> },
 }
 
 /// Spawn the transport thread that processes commands serially with throttling.
@@ -132,10 +138,14 @@ fn handle_command(req: CommandRequest, session: &UsbSession, last_command: &mut 
         std::thread::sleep(min_delay - elapsed);
     }
 
-    let result = if req.is_query {
-        flow_control::query_command(session, req.cmd, &req.data, req.checksum).map(Some)
-    } else {
-        flow_control::send_command(session, req.cmd, &req.data, req.checksum).map(|()| None)
+    let result = match req.mode {
+        CommandMode::Query => {
+            flow_control::query_command(session, req.cmd, &req.data, req.checksum).map(Some)
+        }
+        CommandMode::Send => {
+            flow_control::send_command(session, req.cmd, &req.data, req.checksum).map(|()| None)
+        }
+        CommandMode::Read => session.vendor_get_report().map(Some),
     };
 
     *last_command = Instant::now();
@@ -154,10 +164,9 @@ fn pump_input(
     };
 
     let mut report = [0u8; 8];
-    match session.read_report_with_timeout(
-        &mut report,
-        Duration::from_millis(INPUT_POLL_TIMEOUT_MS),
-    ) {
+    match session
+        .read_report_with_timeout(&mut report, Duration::from_millis(INPUT_POLL_TIMEOUT_MS))
+    {
         Ok(n) if n >= 8 => {
             let actions = processor.process_report(&report);
             if !actions.is_empty() {
@@ -251,7 +260,13 @@ pub(crate) fn spawn_hotplug_thread(
                 match event.event_type() {
                     udev::EventType::Add => {
                         let (pid, bus, addr) = extract_device_info(&event, &vid_str);
-                        log::info!("Hot-plug: device arrived VID 0x{} PID 0x{:04X} bus {} addr {}", vid_str, pid, bus, addr);
+                        log::info!(
+                            "Hot-plug: device arrived VID 0x{} PID 0x{:04X} bus {} addr {}",
+                            vid_str,
+                            pid,
+                            bus,
+                            addr
+                        );
                         let _ = event_tx.send(TransportEvent::DeviceArrived {
                             vid,
                             pid,
@@ -262,10 +277,7 @@ pub(crate) fn spawn_hotplug_thread(
                     udev::EventType::Remove => {
                         let (_, bus, addr) = extract_device_info(&event, &vid_str);
                         log::info!("Hot-plug: device removed bus {} addr {}", bus, addr);
-                        let _ = event_tx.send(TransportEvent::DeviceLeft {
-                            bus,
-                            address: addr,
-                        });
+                        let _ = event_tx.send(TransportEvent::DeviceLeft { bus, address: addr });
                     }
                     _ => {}
                 }
@@ -317,12 +329,12 @@ mod tests {
             cmd: 0x8F,
             data: vec![0x01, 0x02],
             checksum: monsgeek_protocol::ChecksumType::Bit7,
-            is_query: true,
+            mode: CommandMode::Query,
             response_tx: tx,
         };
         assert_eq!(req.cmd, 0x8F);
         assert_eq!(req.data, vec![0x01, 0x02]);
-        assert!(req.is_query);
+        assert_eq!(req.mode, CommandMode::Query);
     }
 
     #[test]
@@ -351,10 +363,7 @@ mod tests {
 
     #[test]
     fn test_transport_event_device_left() {
-        let event = TransportEvent::DeviceLeft {
-            bus: 1,
-            address: 5,
-        };
+        let event = TransportEvent::DeviceLeft { bus: 1, address: 5 };
         match event {
             TransportEvent::DeviceLeft { bus, address } => {
                 assert_eq!(bus, 1);

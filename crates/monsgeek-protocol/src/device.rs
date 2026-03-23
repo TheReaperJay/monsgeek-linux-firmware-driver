@@ -224,8 +224,8 @@ mod tests {
 
     #[test]
     fn test_m5w_device_definition() {
-        let device: DeviceDefinition = serde_json::from_str(m5w_json())
-            .expect("failed to deserialize M5W JSON");
+        let device: DeviceDefinition =
+            serde_json::from_str(m5w_json()).expect("failed to deserialize M5W JSON");
 
         assert_eq!(device.id, 1308);
         assert_eq!(device.vid, 0x3151); // 12625
@@ -234,10 +234,7 @@ mod tests {
         assert_eq!(device.display_name, "M5W");
         assert_eq!(device.company, Some("MonsGeek".to_string()));
         assert_eq!(device.key_count, Some(108));
-        assert_eq!(
-            device.key_layout_name,
-            Some("Common108_MG108B".to_string())
-        );
+        assert_eq!(device.key_layout_name, Some("Common108_MG108B".to_string()));
         assert_eq!(device.layer, Some(4));
 
         let fn_sys = device.fn_sys_layer.as_ref().expect("fn_sys_layer missing");
@@ -259,8 +256,8 @@ mod tests {
 
     #[test]
     fn test_m5w_identity() {
-        let device: DeviceDefinition = serde_json::from_str(m5w_json())
-            .expect("failed to deserialize M5W JSON");
+        let device: DeviceDefinition =
+            serde_json::from_str(m5w_json()).expect("failed to deserialize M5W JSON");
 
         assert_eq!(device.vid, 0x3151, "VID should be 0x3151 (MonsGeek)");
         assert_eq!(device.pid, 0x4015, "PID should be 0x4015");
@@ -269,7 +266,8 @@ mod tests {
 
     #[test]
     fn test_has_magnetism_false_when_no_magnetic_switch_true() {
-        let json = r#"{"id":1,"vid":1,"pid":1,"name":"t","displayName":"T","noMagneticSwitch":true}"#;
+        let json =
+            r#"{"id":1,"vid":1,"pid":1,"name":"t","displayName":"T","noMagneticSwitch":true}"#;
         let device: DeviceDefinition = serde_json::from_str(json).unwrap();
         assert!(!device.has_magnetism());
     }
@@ -283,7 +281,8 @@ mod tests {
 
     #[test]
     fn test_has_magnetism_true_when_no_magnetic_switch_false() {
-        let json = r#"{"id":1,"vid":1,"pid":1,"name":"t","displayName":"T","noMagneticSwitch":false}"#;
+        let json =
+            r#"{"id":1,"vid":1,"pid":1,"name":"t","displayName":"T","noMagneticSwitch":false}"#;
         let device: DeviceDefinition = serde_json::from_str(json).unwrap();
         assert!(device.has_magnetism());
     }

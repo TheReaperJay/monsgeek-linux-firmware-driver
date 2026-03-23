@@ -37,7 +37,7 @@ pub use input::InputProcessor;
 pub use thread::TransportEvent;
 pub use usb::{SessionMode as TransportMode, UsbSession, UsbVersionInfo};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use monsgeek_protocol::{ChecksumType, DeviceDefinition};
 
 /// Configuration for opening a transport session.
@@ -118,7 +118,7 @@ impl TransportHandle {
                 cmd,
                 data: data.to_vec(),
                 checksum,
-                is_query: true,
+                mode: thread::CommandMode::Query,
                 response_tx,
             })
             .map_err(|_| TransportError::ChannelClosed)?;
@@ -153,7 +153,7 @@ impl TransportHandle {
                 cmd,
                 data: data.to_vec(),
                 checksum,
-                is_query: false,
+                mode: thread::CommandMode::Send,
                 response_tx,
             })
             .map_err(|_| TransportError::ChannelClosed)?;
@@ -163,6 +163,28 @@ impl TransportHandle {
             .map_err(|_| TransportError::ChannelClosed)?;
 
         result.map(|_| ())
+    }
+
+    /// Read a single 64-byte feature-report response from the connected device.
+    ///
+    /// This supports split send/read RPC semantics used by the gRPC bridge.
+    pub fn read_feature_report(&self) -> Result<[u8; 64], TransportError> {
+        let (response_tx, response_rx) = bounded(1);
+        self.cmd_tx
+            .send(thread::CommandRequest {
+                cmd: 0,
+                data: Vec::new(),
+                checksum: ChecksumType::None,
+                mode: thread::CommandMode::Read,
+                response_tx,
+            })
+            .map_err(|_| TransportError::ChannelClosed)?;
+
+        let result = response_rx
+            .recv()
+            .map_err(|_| TransportError::ChannelClosed)?;
+
+        result.map(|opt| opt.expect("read response must be Some"))
     }
 
     /// Shut down the transport thread by dropping the command channel sender.
@@ -299,7 +321,10 @@ mod tests {
 
     #[test]
     fn test_connect_exists_with_correct_signature() {
-        let _fn_ptr: fn(&DeviceDefinition) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect;
+        let _fn_ptr: fn(
+            &DeviceDefinition,
+        )
+            -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect;
     }
 
     #[test]
@@ -307,7 +332,9 @@ mod tests {
         let _fn_ptr: fn(
             &DeviceDefinition,
             TransportOptions,
-        ) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect_with_options;
+        )
+            -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> =
+            connect_with_options;
     }
 
     #[test]
@@ -331,6 +358,14 @@ mod tests {
             handle.send_fire_and_forget(0x06, &[0x05], ChecksumType::Bit7)
         }
         let _ = check_fire_and_forget as fn(&TransportHandle) -> Result<(), TransportError>;
+    }
+
+    #[test]
+    fn test_transport_handle_read_feature_report_signature() {
+        fn check_read(handle: &TransportHandle) -> Result<[u8; 64], TransportError> {
+            handle.read_feature_report()
+        }
+        let _ = check_read as fn(&TransportHandle) -> Result<[u8; 64], TransportError>;
     }
 
     #[test]

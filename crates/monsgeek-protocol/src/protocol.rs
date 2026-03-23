@@ -179,27 +179,18 @@ mod tests {
     #[test]
     fn test_detect_yichip_by_pid() {
         // No name, 0x40xx PID -> YiChip
-        assert_eq!(
-            ProtocolFamily::detect(None, 0x4005),
-            ProtocolFamily::YiChip
-        );
+        assert_eq!(ProtocolFamily::detect(None, 0x4005), ProtocolFamily::YiChip);
     }
 
     #[test]
     fn test_detect_yichip_by_pid_4099() {
-        assert_eq!(
-            ProtocolFamily::detect(None, 0x4099),
-            ProtocolFamily::YiChip
-        );
+        assert_eq!(ProtocolFamily::detect(None, 0x4099), ProtocolFamily::YiChip);
     }
 
     #[test]
     fn test_detect_default_ry5088() {
         // No name, non-0x40xx PID -> default RY5088
-        assert_eq!(
-            ProtocolFamily::detect(None, 0x5030),
-            ProtocolFamily::Ry5088
-        );
+        assert_eq!(ProtocolFamily::detect(None, 0x5030), ProtocolFamily::Ry5088);
     }
 
     #[test]

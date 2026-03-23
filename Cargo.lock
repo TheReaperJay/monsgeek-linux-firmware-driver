@@ -638,6 +638,7 @@ dependencies = [
 name = "monsgeek-driver"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "futures",
  "monsgeek-protocol",
  "monsgeek-transport",

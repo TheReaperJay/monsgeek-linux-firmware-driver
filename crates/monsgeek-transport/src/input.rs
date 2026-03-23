@@ -248,14 +248,23 @@ mod tests {
         let report = [0x05, 0x00, 0, 0, 0, 0, 0, 0]; // bits 0+2 = LCtrl+LAlt
         let actions = proc.process_report(&report);
 
-        assert_eq!(actions.len(), 2, "Expected 2 actions, got {}", actions.len());
+        assert_eq!(
+            actions.len(),
+            2,
+            "Expected 2 actions, got {}",
+            actions.len()
+        );
 
         let keycodes: Vec<u16> = actions.iter().map(|a| a.keycode).collect();
         assert!(keycodes.contains(&29), "Missing KEY_LEFTCTRL (29)");
         assert!(keycodes.contains(&56), "Missing KEY_LEFTALT (56)");
 
         for action in &actions {
-            assert_eq!(action.value, 1, "Expected press (1) for keycode {}", action.keycode);
+            assert_eq!(
+                action.value, 1,
+                "Expected press (1) for keycode {}",
+                action.keycode
+            );
         }
     }
 
@@ -272,11 +281,22 @@ mod tests {
         let swap = [0x00, 0x00, 0x05, 0, 0, 0, 0, 0];
         let actions = proc.process_report(&swap);
 
-        assert_eq!(actions.len(), 2, "Expected 2 actions, got {}", actions.len());
+        assert_eq!(
+            actions.len(),
+            2,
+            "Expected 2 actions, got {}",
+            actions.len()
+        );
         // Release MUST come before press
-        assert_eq!(actions[0].keycode, 30, "First action should be KEY_A (30) release");
+        assert_eq!(
+            actions[0].keycode, 30,
+            "First action should be KEY_A (30) release"
+        );
         assert_eq!(actions[0].value, 0, "First action should be release (0)");
-        assert_eq!(actions[1].keycode, 48, "Second action should be KEY_B (48) press");
+        assert_eq!(
+            actions[1].keycode, 48,
+            "Second action should be KEY_B (48) press"
+        );
         assert_eq!(actions[1].value, 1, "Second action should be press (1)");
     }
 
@@ -287,7 +307,10 @@ mod tests {
         let report = [0x00, 0x00, 0x01, 0, 0, 0, 0, 0]; // HID 0x01 is unmapped
         let actions = proc.process_report(&report);
 
-        assert!(actions.is_empty(), "Unmapped scancode should produce no events");
+        assert!(
+            actions.is_empty(),
+            "Unmapped scancode should produce no events"
+        );
     }
 
     // Test 8: Six simultaneous keys
@@ -297,7 +320,12 @@ mod tests {
         let report = [0x00, 0x00, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]; // A,B,C,D,E,F
         let actions = proc.process_report(&report);
 
-        assert_eq!(actions.len(), 6, "Expected 6 actions, got {}", actions.len());
+        assert_eq!(
+            actions.len(),
+            6,
+            "Expected 6 actions, got {}",
+            actions.len()
+        );
 
         let expected_keycodes: Vec<u16> = vec![30, 48, 46, 32, 18, 33];
         let actual_keycodes: Vec<u16> = actions.iter().map(|a| a.keycode).collect();
@@ -307,7 +335,11 @@ mod tests {
         }
 
         for action in &actions {
-            assert_eq!(action.value, 1, "Expected press (1) for keycode {}", action.keycode);
+            assert_eq!(
+                action.value, 1,
+                "Expected press (1) for keycode {}",
+                action.keycode
+            );
         }
     }
 
@@ -366,7 +398,11 @@ mod tests {
         let t_repress = base_time + Duration::from_millis(15);
         let actions = proc.process_report_at(&repress, t_repress);
 
-        assert_eq!(actions.len(), 1, "Re-press after debounce window should pass through");
+        assert_eq!(
+            actions.len(),
+            1,
+            "Re-press after debounce window should pass through"
+        );
         assert_eq!(actions[0].keycode, 30, "Expected KEY_A (30)");
         assert_eq!(actions[0].value, 1, "Expected press (1)");
     }
@@ -413,7 +449,12 @@ mod tests {
         // Release all
         let actions = proc.release_all_keys();
 
-        assert_eq!(actions.len(), 4, "Expected 4 release actions, got {}", actions.len());
+        assert_eq!(
+            actions.len(),
+            4,
+            "Expected 4 release actions, got {}",
+            actions.len()
+        );
 
         let keycodes: Vec<u16> = actions.iter().map(|a| a.keycode).collect();
         assert!(keycodes.contains(&30), "Missing KEY_A (30) release");
@@ -422,7 +463,10 @@ mod tests {
         assert!(keycodes.contains(&42), "Missing KEY_LEFTSHIFT (42) release");
 
         for action in &actions {
-            assert_eq!(action.value, 0, "All release_all events should be releases (0)");
+            assert_eq!(
+                action.value, 0,
+                "All release_all events should be releases (0)"
+            );
         }
 
         // Verify state is reset
@@ -436,7 +480,10 @@ mod tests {
         let mut proc = InputProcessor::new(0);
         let actions = proc.release_all_keys();
 
-        assert!(actions.is_empty(), "release_all with no held keys should return empty");
+        assert!(
+            actions.is_empty(),
+            "release_all with no held keys should return empty"
+        );
     }
 
     // Test 14: Short report handling

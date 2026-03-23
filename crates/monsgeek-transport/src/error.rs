@@ -18,7 +18,9 @@ pub enum TransportError {
     Timeout { cmd: u8 },
 
     /// Echo byte mismatch after retries: firmware responded with a different command byte.
-    #[error("echo mismatch: expected 0x{expected:02X}, got 0x{actual:02X} after {attempts} attempts")]
+    #[error(
+        "echo mismatch: expected 0x{expected:02X}, got 0x{actual:02X} after {attempts} attempts"
+    )]
     EchoMismatch {
         expected: u8,
         actual: u8,
@@ -30,7 +32,9 @@ pub enum TransportError {
     DeviceNotFound { vid: u16, pid: u16 },
 
     /// Key index or layer exceeds device bounds.
-    #[error("bounds violation: key_index {key_index} exceeds max {max_keys}, layer {layer} exceeds max {max_layers}")]
+    #[error(
+        "bounds violation: key_index {key_index} exceeds max {max_keys}, layer {layer} exceeds max {max_layers}"
+    )]
     BoundsViolation {
         key_index: u16,
         max_keys: u16,
@@ -129,10 +133,7 @@ mod tests {
         match &err {
             TransportError::Usb(msg) => {
                 // rusb::Error::Timeout's Display output -- should NOT be TransportError::Timeout
-                assert!(
-                    !msg.is_empty(),
-                    "USB error message should not be empty"
-                );
+                assert!(!msg.is_empty(), "USB error message should not be empty");
             }
             other => panic!("expected TransportError::Usb, got: {:?}", other),
         }

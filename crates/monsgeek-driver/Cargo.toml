@@ -15,6 +15,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5"
 
 [build-dependencies]
 tonic-build = "0.12"

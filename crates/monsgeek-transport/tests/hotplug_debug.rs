@@ -54,9 +54,7 @@ fn test_libusb_hotplug_raw() {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        context
-            .handle_events(Some(Duration::from_millis(500)))
-            .ok();
+        context.handle_events(Some(Duration::from_millis(500))).ok();
     }
 
     println!("\nDone.");

@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use monsgeek_protocol::{cmd, ChecksumType};
+use monsgeek_protocol::{ChecksumType, cmd};
 use rusb::UsbContext;
 
 use crate::error::TransportError;
@@ -138,11 +138,7 @@ impl UsbSession {
     ///
     /// Returns `TransportError::DeviceNotFound` if no matching device is found.
     /// Returns `TransportError::Usb` for any rusb failure during open/claim.
-    pub fn open_with_mode(
-        vid: u16,
-        pid: u16,
-        mode: SessionMode,
-    ) -> Result<Self, TransportError> {
+    pub fn open_with_mode(vid: u16, pid: u16, mode: SessionMode) -> Result<Self, TransportError> {
         Self::open_impl(vid, pid, mode, true)
     }
 
@@ -178,7 +174,10 @@ impl UsbSession {
             let handle = device.open()?;
             match handle.reset() {
                 Ok(()) => {
-                    log::info!("USB: reset OK, waiting {}ms for re-enumeration", RESET_SETTLE_MS);
+                    log::info!(
+                        "USB: reset OK, waiting {}ms for re-enumeration",
+                        RESET_SETTLE_MS
+                    );
                     drop(handle);
                     std::thread::sleep(Duration::from_millis(RESET_SETTLE_MS));
                     return Self::open_impl(vid, pid, mode, false);
@@ -374,7 +373,8 @@ impl UsbSession {
 
     /// Query `GET_USB_VERSION` (0x8F) and parse the 32-bit device ID.
     pub fn query_usb_version(&self) -> Result<UsbVersionInfo, TransportError> {
-        let response = flow_control::query_command(self, cmd::GET_USB_VERSION, &[], ChecksumType::Bit7)?;
+        let response =
+            flow_control::query_command(self, cmd::GET_USB_VERSION, &[], ChecksumType::Bit7)?;
         UsbVersionInfo::parse(&response)
     }
 
@@ -476,7 +476,10 @@ mod tests {
         // This test verifies the contract: data.len() must be 64.
         // Since we can't construct a UsbSession without hardware, we test the
         // assertion logic extracted to a helper.
-        assert_eq!(63_usize, 64, "vendor_set_report requires exactly 64 bytes, got 63");
+        assert_eq!(
+            63_usize, 64,
+            "vendor_set_report requires exactly 64 bytes, got 63"
+        );
     }
 
     #[test]
@@ -494,11 +497,11 @@ mod tests {
     #[test]
     fn test_usb_version_info_parse() {
         let response = [
-            0x8F, 0x1C, 0x05, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x8F, 0x1C, 0x05, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
 
         let info = UsbVersionInfo::parse(&response).expect("failed to parse response");

@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use monsgeek_protocol::{DeviceDefinition, DeviceRegistry};
 use rusb::UsbContext;
 
-use crate::usb::UsbSession;
 use crate::error::TransportError;
+use crate::usb::UsbSession;
 
 /// Information about a discovered MonsGeek keyboard.
 #[derive(Debug, Clone)]
@@ -258,7 +258,10 @@ pub(crate) fn enumerate_usb_candidates(vid: u16) -> Result<Vec<UsbCandidate>, Tr
     Ok(candidates)
 }
 
-fn device_info_from_definition(definition: &DeviceDefinition, candidate: UsbCandidate) -> DeviceInfo {
+fn device_info_from_definition(
+    definition: &DeviceDefinition,
+    candidate: UsbCandidate,
+) -> DeviceInfo {
     DeviceInfo {
         vid: candidate.vid,
         pid: candidate.pid,
