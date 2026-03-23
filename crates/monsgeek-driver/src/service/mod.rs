@@ -89,12 +89,22 @@ impl DriverService {
                 }
             };
 
-            for info in select_preferred_infos(&service.registry, discovered) {
-                // Startup scan populates runtime map; initial watcher snapshot will carry it.
+            let selected = select_preferred_infos(&service.registry, discovered);
+            for info in &selected {
+                if let Some(definition) = service.registry.find_by_id(info.device_id) {
+                    service
+                        .path_registry
+                        .lock()
+                        .expect("path registry poisoned")
+                        .register(info.vid, info.pid, definition.id, info.bus, info.address);
+                }
+            }
+            service.startup_scan_done.store(true, Ordering::SeqCst);
+
+            for info in selected {
+                // Startup scan opens transports in background after Init is available.
                 service.connect_and_register(info, false);
             }
-
-            service.startup_scan_done.store(true, Ordering::SeqCst);
         });
     }
 
@@ -109,15 +119,23 @@ impl DriverService {
             return;
         };
 
-        if self
-            .path_registry
-            .lock()
-            .expect("path registry poisoned")
-            .get_by_bus_address(info.bus, info.address)
-            .is_some()
-        {
-            return;
-        }
+        let registration = {
+            let mut registry = self.path_registry.lock().expect("path registry poisoned");
+            let existing = registry.get_by_bus_address(info.bus, info.address);
+            if let Some(existing) = existing {
+                if self
+                    .devices
+                    .lock()
+                    .expect("devices map poisoned")
+                    .contains_key(&existing.path)
+                {
+                    return;
+                }
+                existing
+            } else {
+                registry.register(info.vid, info.pid, definition.id, info.bus, info.address)
+            }
+        };
 
         let (handle, event_rx) = match connect_at_with_options(
             &definition,
@@ -138,12 +156,6 @@ impl DriverService {
                 return;
             }
         };
-
-        let registration = self
-            .path_registry
-            .lock()
-            .expect("path registry poisoned")
-            .register(info.vid, info.pid, definition.id, info.bus, info.address);
 
         let connected = ConnectedDevice {
             registration: registration.clone(),
@@ -465,6 +477,21 @@ fn device_to_djdev(device: &ConnectedDevice, is_online: bool) -> DjDev {
     }
 }
 
+fn registration_to_djdev(registration: DeviceRegistration) -> DjDev {
+    DjDev {
+        oneof_dev: Some(dj_dev::OneofDev::Dev(Device {
+            dev_type: DeviceType::YzwKeyboard as i32,
+            is24: registration.pid == 0x4011,
+            path: registration.path,
+            id: registration.device_id,
+            battery: 100,
+            is_online: true,
+            vid: registration.vid as u32,
+            pid: registration.pid as u32,
+        })),
+    }
+}
+
 fn protocol_devices_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../monsgeek-protocol")
@@ -514,13 +541,20 @@ impl DriverGrpc for DriverService {
             }
         }
 
-        let initial_devs: Vec<DjDev> = self
-            .devices
-            .lock()
-            .expect("devices map poisoned")
-            .values()
-            .map(|d| device_to_djdev(d, true))
-            .collect();
+        let initial_devs: Vec<DjDev> = {
+            let devices = self.devices.lock().expect("devices map poisoned");
+            if devices.is_empty() {
+                self.path_registry
+                    .lock()
+                    .expect("path registry poisoned")
+                    .list()
+                    .into_iter()
+                    .map(registration_to_djdev)
+                    .collect()
+            } else {
+                devices.values().map(|d| device_to_djdev(d, true)).collect()
+            }
+        };
         let initial_list = DeviceList {
             dev_list: initial_devs,
             r#type: DeviceListChangeType::Init as i32,

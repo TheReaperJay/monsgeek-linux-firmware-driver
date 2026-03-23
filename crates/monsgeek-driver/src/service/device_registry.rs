@@ -73,6 +73,10 @@ impl DevicePathRegistry {
         self.by_path.remove(&path)
     }
 
+    pub fn list(&self) -> Vec<DeviceRegistration> {
+        self.by_path.values().cloned().collect()
+    }
+
     pub fn parse_vid_pid(path: &str) -> Option<(u16, u16)> {
         let mut parts = path.split('-');
         let vid = u16::from_str_radix(parts.next()?, 16).ok()?;
