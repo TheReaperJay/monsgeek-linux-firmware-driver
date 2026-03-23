@@ -46,6 +46,7 @@ pub struct DriverService {
     device_tx: broadcast::Sender<DeviceList>,
     db: DbStore,
     runtime_started: Arc<AtomicBool>,
+    startup_scan_done: Arc<AtomicBool>,
 }
 
 impl DriverService {
@@ -66,6 +67,7 @@ impl DriverService {
             device_tx,
             db: DbStore::new(),
             runtime_started: Arc::new(AtomicBool::new(false)),
+            startup_scan_done: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -88,10 +90,11 @@ impl DriverService {
             };
 
             for info in select_preferred_infos(&service.registry, discovered) {
-                // Startup discovery emits Add deltas so existing watchers update
-                // without waiting for a second watch call.
-                service.connect_and_register(info, true);
+                // Startup scan populates runtime map; initial watcher snapshot will carry it.
+                service.connect_and_register(info, false);
             }
+
+            service.startup_scan_done.store(true, Ordering::SeqCst);
         });
     }
 
@@ -488,7 +491,28 @@ impl DriverGrpc for DriverService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::watchDevListStream>, Status> {
+        // Subscribe first so no hot-plug deltas are lost while startup discovery runs.
+        let rx = self.device_tx.subscribe();
         self.ensure_runtime_started();
+
+        // Give first discovery scan a bounded window so Init carries current devices.
+        // This matches webapp expectation of Init containing present devices.
+        if !self.startup_scan_done.load(Ordering::SeqCst) {
+            for _ in 0..80 {
+                if self.startup_scan_done.load(Ordering::SeqCst) {
+                    break;
+                }
+                if !self
+                    .devices
+                    .lock()
+                    .expect("devices map poisoned")
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
 
         let initial_devs: Vec<DjDev> = self
             .devices
@@ -502,7 +526,10 @@ impl DriverGrpc for DriverService {
             r#type: DeviceListChangeType::Init as i32,
         };
 
-        let rx = self.device_tx.subscribe();
+        tracing::info!(
+            "watch_dev_list: sending Init with {} device(s)",
+            initial_list.dev_list.len()
+        );
         let initial_stream = stream::iter(std::iter::once(Ok(initial_list)));
         let updates = BroadcastStream::new(rx).filter_map(|msg| async move { msg.ok().map(Ok) });
         Ok(Response::new(Box::pin(initial_stream.chain(updates))))
