@@ -32,7 +32,7 @@ impl DevicePathRegistry {
         // Keep the first 5 dash-separated parts compatible with webapp parse_device_path.
         // Extra identity details live in the @suffix.
         format!(
-            "{:04x}-{:04x}-ffff-0002-2@id{}-b{:03}-a{:03}-n{}",
+            "{:04x}-{:04x}-ffff-0002-1@id{}-b{:03}-a{:03}-n{}",
             vid, pid, device_id, bus, address, self.next_suffix
         )
     }

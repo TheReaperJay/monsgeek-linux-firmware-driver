@@ -232,6 +232,38 @@ pub fn connect_with_options(
     options: TransportOptions,
 ) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
     let session = open_matching_session(device, options.mode)?;
+    spawn_transport(device, session, options)
+}
+
+/// Connect to a specific runtime USB location (bus/address) with explicit options.
+///
+/// Unlike [`connect_with_options`], this does not pivot to a profile-preferred PID.
+/// It is used when discovery already identified the exact runtime device.
+pub fn connect_at_with_options(
+    device: &DeviceDefinition,
+    bus: u8,
+    address: u8,
+    options: TransportOptions,
+) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
+    let session = UsbSession::open_at_with_mode(bus, address, options.mode)?;
+    let usb_version = session.query_usb_version()?;
+    if usb_version.device_id_i32() != device.id {
+        return Err(TransportError::Usb(format!(
+            "runtime candidate {:03}:{:03} reported device ID {} but expected {}",
+            bus,
+            address,
+            usb_version.device_id_i32(),
+            device.id
+        )));
+    }
+    spawn_transport(device, session, options)
+}
+
+fn spawn_transport(
+    device: &DeviceDefinition,
+    session: UsbSession,
+    options: TransportOptions,
+) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
     let (cmd_tx, cmd_rx) = bounded(monsgeek_protocol::timing::dongle::REQUEST_QUEUE_SIZE);
     let (event_tx, event_rx) = bounded(32);
     let input_processor = match options.mode {
@@ -335,6 +367,18 @@ mod tests {
         )
             -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> =
             connect_with_options;
+    }
+
+    #[test]
+    fn test_connect_at_with_options_exists_with_correct_signature() {
+        let _fn_ptr: fn(
+            &DeviceDefinition,
+            u8,
+            u8,
+            TransportOptions,
+        )
+            -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> =
+            connect_at_with_options;
     }
 
     #[test]

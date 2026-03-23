@@ -11,7 +11,9 @@ use futures::Stream;
 use futures::stream::{self, StreamExt};
 use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry};
 use monsgeek_transport::discovery::DeviceInfo;
-use monsgeek_transport::{TransportEvent, TransportHandle, TransportOptions, connect_with_options};
+use monsgeek_transport::{
+    TransportEvent, TransportHandle, TransportOptions, connect_at_with_options,
+};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
@@ -75,18 +77,22 @@ impl DriverService {
         {
             return;
         }
+        let service = self.clone();
+        std::thread::spawn(move || {
+            let discovered = match monsgeek_transport::discovery::probe_devices(&service.registry) {
+                Ok(list) => list,
+                Err(err) => {
+                    tracing::warn!("initial probe failed: {}", err);
+                    Vec::new()
+                }
+            };
 
-        let discovered = match monsgeek_transport::discovery::probe_devices(&self.registry) {
-            Ok(list) => list,
-            Err(err) => {
-                tracing::warn!("initial probe failed: {}", err);
-                Vec::new()
+            for info in select_preferred_infos(&service.registry, discovered) {
+                // Startup discovery emits Add deltas so existing watchers update
+                // without waiting for a second watch call.
+                service.connect_and_register(info, true);
             }
-        };
-
-        for info in discovered {
-            self.connect_and_register(info, false);
-        }
+        });
     }
 
     fn connect_and_register(&self, info: DeviceInfo, emit_add: bool) {
@@ -110,19 +116,25 @@ impl DriverService {
             return;
         }
 
-        let (handle, event_rx) =
-            match connect_with_options(&definition, TransportOptions::control_only()) {
-                Ok(parts) => parts,
-                Err(err) => {
-                    tracing::warn!(
-                        "failed to open transport for {} (id={}): {}",
-                        definition.display_name,
-                        definition.id,
-                        err
-                    );
-                    return;
-                }
-            };
+        let (handle, event_rx) = match connect_at_with_options(
+            &definition,
+            info.bus,
+            info.address,
+            TransportOptions::control_only(),
+        ) {
+            Ok(parts) => parts,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to open runtime transport for {} (id={}) at {:03}:{:03}: {}",
+                    definition.display_name,
+                    definition.id,
+                    info.bus,
+                    info.address,
+                    err
+                );
+                return;
+            }
+        };
 
         let registration = self
             .path_registry
@@ -203,16 +215,20 @@ impl DriverService {
                             continue;
                         };
 
-                        let (handle, nested_event_rx) = match connect_with_options(
+                        let (handle, nested_event_rx) = match connect_at_with_options(
                             &definition,
+                            bus,
+                            address,
                             TransportOptions::control_only(),
                         ) {
                             Ok(parts) => parts,
                             Err(err) => {
                                 tracing::warn!(
-                                    "hot-plug connect failed for {:04x}:{:04x}: {}",
+                                    "hot-plug runtime connect failed for {:04x}:{:04x} at {:03}:{:03}: {}",
                                     vid,
                                     pid,
+                                    bus,
+                                    address,
                                     err
                                 );
                                 continue;
@@ -272,10 +288,13 @@ impl DriverService {
 
         let probe_result = monsgeek_transport::discovery::probe_devices(&self.registry)
             .map_err(|e| Status::internal(format!("probe failed: {e}")))?;
-        let info = probe_result
-            .into_iter()
-            .find(|d| d.device_id == definition.id)
-            .ok_or_else(|| Status::not_found("device not present"))?;
+        let info = select_preferred_info_for_definition(
+            &definition,
+            probe_result
+                .into_iter()
+                .filter(|d| d.device_id == definition.id),
+        )
+        .ok_or_else(|| Status::not_found("device not present"))?;
 
         self.connect_and_register(info, true);
 
@@ -364,6 +383,68 @@ fn parse_id_hint(path: &str) -> Option<i32> {
         .split('-')
         .find(|segment| segment.starts_with("id"))?;
     id_part.strip_prefix("id")?.parse::<i32>().ok()
+}
+
+fn select_preferred_infos(
+    registry: &DeviceRegistry,
+    discovered: Vec<DeviceInfo>,
+) -> Vec<DeviceInfo> {
+    let mut selected: HashMap<i32, DeviceInfo> = HashMap::new();
+
+    for info in discovered {
+        let Some(definition) = registry.find_by_id(info.device_id) else {
+            continue;
+        };
+        match selected.entry(info.device_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(info);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if candidate_is_better(definition, &info, entry.get()) {
+                    entry.insert(info);
+                }
+            }
+        }
+    }
+
+    selected.into_values().collect()
+}
+
+fn select_preferred_info_for_definition<I>(
+    definition: &DeviceDefinition,
+    infos: I,
+) -> Option<DeviceInfo>
+where
+    I: Iterator<Item = DeviceInfo>,
+{
+    let mut best: Option<DeviceInfo> = None;
+    for info in infos {
+        if let Some(current) = &best {
+            if candidate_is_better(definition, &info, current) {
+                best = Some(info);
+            }
+        } else {
+            best = Some(info);
+        }
+    }
+    best
+}
+
+fn candidate_is_better(
+    definition: &DeviceDefinition,
+    candidate: &DeviceInfo,
+    current: &DeviceInfo,
+) -> bool {
+    // Prefer primary profile PID (wired default for current M5W profile) when both
+    // runtime paths represent the same firmware device ID.
+    let candidate_primary = candidate.pid == definition.pid;
+    let current_primary = current.pid == definition.pid;
+    if candidate_primary != current_primary {
+        return candidate_primary;
+    }
+
+    // Deterministic tie-break to avoid non-reproducible selection.
+    (candidate.bus, candidate.address) < (current.bus, current.address)
 }
 
 fn device_to_djdev(device: &ConnectedDevice, is_online: bool) -> DjDev {
