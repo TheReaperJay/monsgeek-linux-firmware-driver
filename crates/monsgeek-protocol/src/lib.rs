@@ -12,7 +12,7 @@ pub mod rgb;
 pub mod timing;
 
 pub use checksum::{apply_checksum, build_ble_command, build_command, calculate_checksum, ChecksumType};
-pub use device::DeviceDefinition;
+pub use device::{CommandOverrides, DeviceDefinition};
 pub use error::{ProtocolError, RegistryError};
 pub use protocol::{CommandTable, ProtocolFamily, RY5088_COMMANDS, YICHIP_COMMANDS};
 pub use registry::DeviceRegistry;

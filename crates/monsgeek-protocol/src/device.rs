@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::{CommandTable, ProtocolFamily};
+
 /// Numeric range configuration for travel/actuation settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +35,46 @@ pub struct FnSysLayer {
     pub win: u8,
     #[serde(default)]
     pub mac: u8,
+}
+
+/// Per-device command-byte overrides layered on top of the baseline protocol
+/// family table.
+///
+/// This is necessary because some keyboards do not cleanly follow the generic
+/// family mapping for every command byte. The M5W is the first verified case:
+/// it is a YC3121 device, but its debounce/report commands follow the exact
+/// values observed in the M5W reference project and on live hardware.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandOverrides {
+    #[serde(default)]
+    pub set_reset: Option<u8>,
+    #[serde(default)]
+    pub set_profile: Option<u8>,
+    #[serde(default)]
+    pub set_debounce: Option<u8>,
+    #[serde(default)]
+    pub set_keymatrix: Option<u8>,
+    #[serde(default)]
+    pub set_macro: Option<u8>,
+    #[serde(default)]
+    pub get_profile: Option<u8>,
+    #[serde(default)]
+    pub get_debounce: Option<u8>,
+    #[serde(default)]
+    pub get_keymatrix: Option<u8>,
+    #[serde(default)]
+    pub set_report: Option<u8>,
+    #[serde(default)]
+    pub set_kboption: Option<u8>,
+    #[serde(default)]
+    pub set_sleeptime: Option<u8>,
+    #[serde(default)]
+    pub get_report: Option<u8>,
+    #[serde(default)]
+    pub get_kboption: Option<u8>,
+    #[serde(default)]
+    pub get_sleeptime: Option<u8>,
 }
 
 fn default_device_type() -> String {
@@ -91,6 +133,10 @@ pub struct DeviceDefinition {
     /// Chip family (e.g., "YC3121", "RY5088").
     #[serde(default)]
     pub chip_family: Option<String>,
+    /// Optional per-device overrides for command bytes that diverge from the
+    /// baseline family table.
+    #[serde(default)]
+    pub command_overrides: Option<CommandOverrides>,
 }
 
 impl DeviceDefinition {
@@ -106,6 +152,65 @@ impl DeviceDefinition {
             return !no_magnetic;
         }
         false
+    }
+
+    /// Resolve the baseline command table for this device from protocol family
+    /// heuristics.
+    pub fn protocol_family(&self) -> ProtocolFamily {
+        ProtocolFamily::detect(Some(&self.name), self.pid)
+    }
+
+    /// Resolve command bytes for this device, applying any per-device
+    /// overrides on top of the baseline family table.
+    pub fn commands(&self) -> CommandTable {
+        let mut table = *self.protocol_family().commands();
+
+        if let Some(overrides) = &self.command_overrides {
+            if let Some(value) = overrides.set_reset {
+                table.set_reset = value;
+            }
+            if let Some(value) = overrides.set_profile {
+                table.set_profile = value;
+            }
+            if let Some(value) = overrides.set_debounce {
+                table.set_debounce = value;
+            }
+            if let Some(value) = overrides.set_keymatrix {
+                table.set_keymatrix = value;
+            }
+            if let Some(value) = overrides.set_macro {
+                table.set_macro = value;
+            }
+            if let Some(value) = overrides.get_profile {
+                table.get_profile = value;
+            }
+            if let Some(value) = overrides.get_debounce {
+                table.get_debounce = value;
+            }
+            if let Some(value) = overrides.get_keymatrix {
+                table.get_keymatrix = value;
+            }
+            if let Some(value) = overrides.set_report {
+                table.set_report = Some(value);
+            }
+            if let Some(value) = overrides.set_kboption {
+                table.set_kboption = Some(value);
+            }
+            if let Some(value) = overrides.set_sleeptime {
+                table.set_sleeptime = Some(value);
+            }
+            if let Some(value) = overrides.get_report {
+                table.get_report = Some(value);
+            }
+            if let Some(value) = overrides.get_kboption {
+                table.get_kboption = Some(value);
+            }
+            if let Some(value) = overrides.get_sleeptime {
+                table.get_sleeptime = Some(value);
+            }
+        }
+
+        table
     }
 }
 
@@ -145,6 +250,11 @@ mod tests {
         assert_eq!(device.has_side_light, Some(false));
         assert_eq!(device.hot_swap, Some(false));
         assert_eq!(device.chip_family, Some("YC3121".to_string()));
+        let commands = device.commands();
+        assert_eq!(commands.set_debounce, 0x06);
+        assert_eq!(commands.get_debounce, 0x86);
+        assert_eq!(commands.set_report, Some(0x03));
+        assert_eq!(commands.get_report, Some(0x83));
     }
 
     #[test]
@@ -198,6 +308,7 @@ mod tests {
         assert!(device.travel_setting.is_none());
         assert_eq!(device.led_matrix, None);
         assert_eq!(device.chip_family, None);
+        assert!(device.command_overrides.is_none());
     }
 
     #[test]
@@ -206,5 +317,41 @@ mod tests {
         let fn_sys: FnSysLayer = serde_json::from_str(json).unwrap();
         assert_eq!(fn_sys.win, 2);
         assert_eq!(fn_sys.mac, 2);
+    }
+
+    #[test]
+    fn test_commands_fall_back_to_family_when_no_overrides() {
+        let json = r#"{"id":1,"vid":1,"pid":16389,"name":"yc500_test","displayName":"Test"}"#;
+        let device: DeviceDefinition = serde_json::from_str(json).unwrap();
+        let commands = device.commands();
+        assert_eq!(device.protocol_family(), ProtocolFamily::YiChip);
+        assert_eq!(commands.set_debounce, 0x11);
+        assert_eq!(commands.get_debounce, 0x91);
+        assert_eq!(commands.set_report, None);
+        assert_eq!(commands.get_report, None);
+    }
+
+    #[test]
+    fn test_commands_apply_device_overrides() {
+        let json = r#"{
+            "id": 1308,
+            "vid": 12625,
+            "pid": 16405,
+            "name": "yc3121_m5w_soc",
+            "displayName": "M5W",
+            "commandOverrides": {
+                "setDebounce": 6,
+                "getDebounce": 134,
+                "setReport": 3,
+                "getReport": 131
+            }
+        }"#;
+        let device: DeviceDefinition = serde_json::from_str(json).unwrap();
+        let commands = device.commands();
+        assert_eq!(device.protocol_family(), ProtocolFamily::YiChip);
+        assert_eq!(commands.set_debounce, 0x06);
+        assert_eq!(commands.get_debounce, 0x86);
+        assert_eq!(commands.set_report, Some(0x03));
+        assert_eq!(commands.get_report, Some(0x83));
     }
 }

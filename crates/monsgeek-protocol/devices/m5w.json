@@ -15,5 +15,13 @@
   "hasLightLayout": true,
   "hasSideLight": false,
   "hotSwap": false,
-  "chipFamily": "YC3121"
+  "chipFamily": "YC3121",
+  "commandOverrides": {
+    "setDebounce": 6,
+    "getDebounce": 134,
+    "setReport": 3,
+    "getReport": 131,
+    "setSleeptime": 17,
+    "getSleeptime": 145
+  }
 }

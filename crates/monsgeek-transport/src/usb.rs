@@ -41,23 +41,33 @@ const USB_TIMEOUT: Duration = Duration::from_secs(1);
 /// (two re-enumerations back to back: plug + reset).
 const RESET_SETTLE_MS: u64 = 1000;
 
+/// Transport ownership mode for a USB session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionMode {
+    /// Claim only the vendor command interface (IF2) and preserve kernel-managed
+    /// typing on IF0 whenever the kernel is bound there.
+    #[default]
+    ControlOnly,
+    /// Intentionally claim IF0/IF1/IF2 and expose translated input via the
+    /// transport layer rather than relying on the kernel keyboard stack.
+    UserspaceInput,
+}
+
 /// A USB session holding a claimed device handle for HID I/O.
 ///
-/// `UsbSession` owns a `rusb::DeviceHandle` with all three interfaces claimed:
-/// - IF0: keyboard input via interrupt transfers (boot protocol)
-/// - IF1: NKRO (claimed to prevent kernel probing, not actively used)
-/// - IF2: vendor commands via control transfers (feature reports)
-///
-/// With `HID_QUIRK_IGNORE` active, usbhid never binds to any interface, so this
-/// driver handles IF0 keyboard input directly via `read_report`.
+/// `UsbSession` owns a `rusb::DeviceHandle` and claims interfaces according to
+/// [`SessionMode`]:
+/// - [`SessionMode::ControlOnly`]: claim IF2 only for vendor commands
+/// - [`SessionMode::UserspaceInput`]: claim IF0/IF1/IF2 and enable boot-protocol input
 ///
 /// # Lifetime
 ///
-/// On drop, all three interfaces are released via the `Drop` impl.
+/// On drop, all claimed interfaces are released via the `Drop` impl.
 pub struct UsbSession {
     handle: rusb::DeviceHandle<rusb::Context>,
-    ep_in: u8,
+    ep_in: Option<u8>,
     detached_if0: bool,
+    mode: SessionMode,
 }
 
 /// Parsed response from `GET_USB_VERSION` (0x8F).
@@ -100,7 +110,12 @@ impl UsbVersionInfo {
 }
 
 impl UsbSession {
-    /// Open a MonsGeek keyboard by VID/PID, reset to clear STALL, and claim all interfaces.
+    /// Open a MonsGeek keyboard by VID/PID in control-only mode.
+    pub fn open(vid: u16, pid: u16) -> Result<Self, TransportError> {
+        Self::open_with_mode(vid, pid, SessionMode::ControlOnly)
+    }
+
+    /// Open a MonsGeek keyboard by VID/PID with an explicit ownership mode.
     ///
     /// The yc3121 firmware STALLs when usbhid probes IF1/IF2 HID descriptors
     /// during initial USB enumeration. This leaves the control pipe in an error
@@ -114,20 +129,29 @@ impl UsbSession {
     /// 2. Open, reset, drop handle (clears STALL if present)
     /// 3. Wait for re-enumeration
     /// 4. Re-find device (address may change after reset)
-    /// 5. Re-open, detach kernel drivers from all interfaces if active
-    /// 6. Claim IF0, IF1, IF2
-    /// 7. Discover IF0's interrupt IN endpoint from the USB config descriptor
-    /// 8. Send SET_PROTOCOL(Boot) to IF0
+    /// 5. Re-open, detach kernel drivers from the interfaces required by `mode`
+    /// 6. Claim the interfaces required by `mode`
+    /// 7. If `mode` owns IF0, discover IF0's interrupt IN endpoint
+    /// 8. If `mode` owns IF0, send SET_PROTOCOL(Boot) to IF0
     ///
     /// # Errors
     ///
     /// Returns `TransportError::DeviceNotFound` if no matching device is found.
     /// Returns `TransportError::Usb` for any rusb failure during open/claim.
-    pub fn open(vid: u16, pid: u16) -> Result<Self, TransportError> {
-        Self::open_impl(vid, pid, true)
+    pub fn open_with_mode(
+        vid: u16,
+        pid: u16,
+        mode: SessionMode,
+    ) -> Result<Self, TransportError> {
+        Self::open_impl(vid, pid, mode, true)
     }
 
-    fn open_impl(vid: u16, pid: u16, do_reset: bool) -> Result<Self, TransportError> {
+    fn open_impl(
+        vid: u16,
+        pid: u16,
+        mode: SessionMode,
+        do_reset: bool,
+    ) -> Result<Self, TransportError> {
         let context = rusb::Context::new()?;
         let device = context
             .devices()?
@@ -157,7 +181,7 @@ impl UsbSession {
                     log::info!("USB: reset OK, waiting {}ms for re-enumeration", RESET_SETTLE_MS);
                     drop(handle);
                     std::thread::sleep(Duration::from_millis(RESET_SETTLE_MS));
-                    return Self::open_impl(vid, pid, false);
+                    return Self::open_impl(vid, pid, mode, false);
                 }
                 Err(e) => {
                     log::warn!("USB: reset failed: {} (continuing without reset)", e);
@@ -168,29 +192,40 @@ impl UsbSession {
 
         let handle = device.open()?;
 
-        // Discover IF0's interrupt IN endpoint from the USB config descriptor.
-        let config = device.active_config_descriptor()?;
-        let ep_in = config
-            .interfaces()
-            .find(|i| i.number() == IF0)
-            .and_then(|i| i.descriptors().next())
-            .and_then(|d| {
-                d.endpoint_descriptors().find(|ep| {
-                    ep.direction() == rusb::Direction::In
-                        && ep.transfer_type() == rusb::TransferType::Interrupt
+        let claims_input = matches!(mode, SessionMode::UserspaceInput);
+        let ep_in = if claims_input {
+            let config = device.active_config_descriptor()?;
+            let ep_in = config
+                .interfaces()
+                .find(|i| i.number() == IF0)
+                .and_then(|i| i.descriptors().next())
+                .and_then(|d| {
+                    d.endpoint_descriptors().find(|ep| {
+                        ep.direction() == rusb::Direction::In
+                            && ep.transfer_type() == rusb::TransferType::Interrupt
+                    })
                 })
-            })
-            .map(|ep| ep.address())
-            .ok_or_else(|| {
-                TransportError::Usb("IF0 has no interrupt IN endpoint".to_string())
-            })?;
-        log::debug!("USB: IF0 interrupt IN endpoint: 0x{:02X}", ep_in);
+                .map(|ep| ep.address())
+                .ok_or_else(|| {
+                    TransportError::Usb("IF0 has no interrupt IN endpoint".to_string())
+                })?;
+            log::debug!("USB: IF0 interrupt IN endpoint: 0x{:02X}", ep_in);
+            Some(ep_in)
+        } else {
+            None
+        };
 
-        // Detach kernel drivers from all interfaces and claim them.
+        // Detach kernel drivers from the interfaces we are about to claim.
         // With HID_QUIRK_IGNORE, no kernel drivers will be active, but
         // the detach logic remains as a fallback for systems without the quirk.
         let mut detached_if0 = false;
-        for iface in [IF0, IF1, IF2] {
+        let interfaces: &[u8] = if claims_input {
+            &[IF0, IF1, IF2]
+        } else {
+            &[IF2]
+        };
+
+        for &iface in interfaces {
             match handle.kernel_driver_active(iface) {
                 Ok(true) => {
                     handle.detach_kernel_driver(iface)?;
@@ -204,39 +239,50 @@ impl UsbSession {
             }
             handle.claim_interface(iface)?;
         }
+
+        let claimed = if claims_input { "IF0, IF1, IF2" } else { "IF2" };
         log::info!(
-            "USB: claimed IF0, IF1, IF2 on bus {:03} addr {:03}",
+            "USB: claimed {} on bus {:03} addr {:03}",
+            claimed,
             device.bus_number(),
             device.address()
         );
 
-        // Put IF0 into Boot Protocol mode. Without this, the keyboard stays
-        // in Report Protocol and sends reports in a format we don't parse.
-        // When hid-generic probes first, it sends SET_PROTOCOL for us, but
-        // with HID_QUIRK_IGNORE (or fast reconnect) no kernel driver probes,
-        // so the keyboard never switches to boot protocol without this.
-        handle
-            .write_control(
-                REQUEST_TYPE_OUT,
-                HID_SET_PROTOCOL,
-                BOOT_PROTOCOL,
-                IF0 as u16,
-                &[],
-                USB_TIMEOUT,
-            )
-            .map_err(|e| {
-                TransportError::Usb(format!("SET_PROTOCOL(Boot) failed on IF0: {}", e))
-            })?;
-        log::info!("USB: SET_PROTOCOL(Boot) sent to IF0");
+        if claims_input {
+            // Put IF0 into Boot Protocol mode. Without this, the keyboard stays
+            // in Report Protocol and sends reports in a format we don't parse.
+            // When hid-generic probes first, it sends SET_PROTOCOL for us, but
+            // with HID_QUIRK_IGNORE (or fast reconnect) no kernel driver probes,
+            // so the keyboard never switches to boot protocol without this.
+            handle
+                .write_control(
+                    REQUEST_TYPE_OUT,
+                    HID_SET_PROTOCOL,
+                    BOOT_PROTOCOL,
+                    IF0 as u16,
+                    &[],
+                    USB_TIMEOUT,
+                )
+                .map_err(|e| {
+                    TransportError::Usb(format!("SET_PROTOCOL(Boot) failed on IF0: {}", e))
+                })?;
+            log::info!("USB: SET_PROTOCOL(Boot) sent to IF0");
+        }
 
         Ok(Self {
             handle,
             ep_in,
             detached_if0,
+            mode,
         })
     }
 
-    /// Open a specific device by bus/address, reset to clear STALL, and claim IF2.
+    /// Open a specific device by bus/address in control-only mode.
+    pub fn open_at(bus: u8, address: u8) -> Result<Self, TransportError> {
+        Self::open_at_with_mode(bus, address, SessionMode::ControlOnly)
+    }
+
+    /// Open a specific device by bus/address with an explicit ownership mode.
     ///
     /// Used for hot-plug reconnection. Delegates to `open()` by VID/PID after
     /// looking up the device descriptor, so the reset-then-reopen sequence applies.
@@ -245,7 +291,11 @@ impl UsbSession {
     ///
     /// Returns `TransportError::DeviceNotFound` if no device exists at the given bus/address.
     /// Returns `TransportError::Usb` for any rusb failure during open/claim.
-    pub fn open_at(bus: u8, address: u8) -> Result<Self, TransportError> {
+    pub fn open_at_with_mode(
+        bus: u8,
+        address: u8,
+        mode: SessionMode,
+    ) -> Result<Self, TransportError> {
         let context = rusb::Context::new()?;
         let device = context
             .devices()?
@@ -262,7 +312,7 @@ impl UsbSession {
             desc.product_id()
         );
 
-        Self::open(desc.vendor_id(), desc.product_id())
+        Self::open_with_mode(desc.vendor_id(), desc.product_id(), mode)
     }
 
     /// Send a 64-byte HID feature report to IF2 via SET_REPORT control transfer.
@@ -334,12 +384,33 @@ impl UsbSession {
     /// Returns `Ok(0)` on timeout (normal -- no key activity within 100ms).
     /// Returns `Err(Disconnected)` if the device was unplugged or had an I/O error.
     pub fn read_report(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        match self.handle.read_interrupt(self.ep_in, buf, Duration::from_millis(100)) {
+        self.read_report_with_timeout(buf, Duration::from_millis(100))
+    }
+
+    /// Read an IF0 boot keyboard HID report with a caller-provided timeout.
+    pub fn read_report_with_timeout(
+        &self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<usize, TransportError> {
+        let ep_in = self.ep_in.ok_or_else(|| {
+            TransportError::Usb(
+                "IF0 input is unavailable in control-only mode; use userspace-input mode"
+                    .to_string(),
+            )
+        })?;
+
+        match self.handle.read_interrupt(ep_in, buf, timeout) {
             Ok(n) => Ok(n),
             Err(rusb::Error::Timeout) => Ok(0),
             Err(rusb::Error::NoDevice) | Err(rusb::Error::Io) => Err(TransportError::Disconnected),
             Err(e) => Err(TransportError::from(e)),
         }
+    }
+
+    /// Return the current ownership mode for this session.
+    pub fn mode(&self) -> SessionMode {
+        self.mode
     }
 
     /// USB bus number of the opened device.
@@ -355,7 +426,13 @@ impl UsbSession {
 
 impl Drop for UsbSession {
     fn drop(&mut self) {
-        for iface in [IF0, IF1, IF2] {
+        let interfaces: &[u8] = if self.ep_in.is_some() {
+            &[IF0, IF1, IF2]
+        } else {
+            &[IF2]
+        };
+
+        for &iface in interfaces {
             self.handle.release_interface(iface).ok();
         }
         if self.detached_if0 {

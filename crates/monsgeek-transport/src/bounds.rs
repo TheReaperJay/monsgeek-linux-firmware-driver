@@ -151,6 +151,7 @@ mod tests {
             travel_setting: None,
             led_matrix: None,
             chip_family: None,
+            command_overrides: None,
         }
     }
 

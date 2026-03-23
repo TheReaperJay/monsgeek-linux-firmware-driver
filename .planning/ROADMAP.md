@@ -21,8 +21,8 @@ This roadmap supersedes earlier planning assumptions that turned out to be wrong
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Project Scaffolding & Device Registry** - Rust workspace structure, FEA protocol constants, and JSON-driven device/profile registry with M5W as the first verified target
-- [ ] **Phase 2: FEA Protocol & HID Transport** - Protocol framing with checksums, raw HID I/O with safety guards, firmware-ID-aware discovery, and non-root access via udev
+- [x] **Phase 1: Project Scaffolding & Device Registry** - Rust workspace structure, FEA protocol constants, and JSON-driven device/profile registry with M5W as the first verified target
+- [x] **Phase 2: FEA Protocol & HID Transport** - Protocol framing with checksums, raw HID I/O with safety guards, firmware-ID-aware discovery, non-root access via udev, and control-only default ownership
 - [ ] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
 - [ ] **Phase 4: Bridge Integration & Key Remapping** - End-to-end web configurator connection with verified key mapping and profile operations on real M5W hardware
 - [ ] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue
@@ -44,8 +44,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Workspace scaffolding, device types, M5W JSON definition, and device registry
-- [ ] 01-02-PLAN.md — FEA protocol constants, checksum algorithms, and protocol family detection
+- [x] 01-01-PLAN.md — Workspace scaffolding, device types, M5W JSON definition, and device registry
+- [x] 01-02-PLAN.md — FEA protocol constants, checksum algorithms, and protocol family detection
 
 ### Phase 2: FEA Protocol & HID Transport
 **Goal**: Reliable, safe HID communication with FEA keyboards, first verified on the wired M5W, that handles real Linux and firmware quirks instead of assumed ones
@@ -55,15 +55,15 @@ Plans:
   1. Driver detects the M5W dynamically on any USB bus/address and reports runtime transport info plus firmware device ID `1308`
   2. A `GET_USB_VERSION` command sent to the M5W returns a valid response whose 32-bit device ID field matches `1308`
   3. Commands sent faster than 100ms apart are automatically throttled by the transport layer (no firmware crash on rapid command sequences)
-  4. Reset-then-reopen plus echo-matched query handling recover from the device's stale/PIPE error states, and SET followed by GET for the same parameter returns the updated value
+  4. Reset-then-reopen plus echo-matched query handling recover from the device's stale/PIPE error states
   5. Running the driver as a non-root user with udev rules installed successfully opens the HID device
   6. Userspace transport cleanup does not leave the keyboard non-functional; `IF0` is returned to the kernel unless a full userspace-input mode is intentionally active
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Transport error types, USB session with rusb control transfers, key matrix bounds validation, and udev rules
-- [ ] 02-02-PLAN.md — Flow control with echo matching, device discovery, transport thread with command channel and hot-plug detection
-- [ ] 02-03-PLAN.md — Hardware integration tests and human verification on real M5W keyboard
+- [x] 02-01-PLAN.md — Transport error types, USB session with rusb control transfers, key matrix bounds validation, and udev rules
+- [x] 02-02-PLAN.md — Flow control with echo matching, device discovery, transport thread with command channel and hot-plug detection
+- [x] 02-03-PLAN.md — Hardware integration tests, ownership-mode closeout, and human verification on real M5W keyboard
 
 ### Phase 3: gRPC-Web Bridge
 **Goal**: MonsGeek web configurator at app.monsgeek.com can connect to the locally running bridge and see the current keyboard through the reusable transport layer
@@ -165,7 +165,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Project Scaffolding & Device Registry | 2/2 | Complete | 2026-03-19 |
-| 2. FEA Protocol & HID Transport | 2/3 | In progress: hardware validation and transport-mode cleanup | - |
+| 2. FEA Protocol & HID Transport | 3/3 | Complete | 2026-03-23 |
 | 3. gRPC-Web Bridge | 0/3 | Not started | - |
 | 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
 | 5. LED Control & Tuning | 0/2 | Not started | - |

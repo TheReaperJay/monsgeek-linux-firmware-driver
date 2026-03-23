@@ -17,7 +17,7 @@
 //!                                       flow_control::query_command
 //!                                       flow_control::send_command
 //!                                                    |
-//!                                           [UsbSession (IF2)]
+//!                                     [UsbSession (mode-selected interfaces)]
 //! ```
 
 pub mod bounds;
@@ -35,10 +35,39 @@ pub use discovery::DeviceInfo;
 pub use error::TransportError;
 pub use input::InputProcessor;
 pub use thread::TransportEvent;
-pub use usb::{UsbSession, UsbVersionInfo};
+pub use usb::{SessionMode as TransportMode, UsbSession, UsbVersionInfo};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use monsgeek_protocol::{ChecksumType, DeviceDefinition};
+
+/// Configuration for opening a transport session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportOptions {
+    pub mode: TransportMode,
+    pub software_debounce_ms: u64,
+}
+
+impl Default for TransportOptions {
+    fn default() -> Self {
+        Self {
+            mode: TransportMode::ControlOnly,
+            software_debounce_ms: 0,
+        }
+    }
+}
+
+impl TransportOptions {
+    pub fn control_only() -> Self {
+        Self::default()
+    }
+
+    pub fn userspace_input(software_debounce_ms: u64) -> Self {
+        Self {
+            mode: TransportMode::UserspaceInput,
+            software_debounce_ms,
+        }
+    }
+}
 
 /// Handle for sending commands to a connected MonsGeek keyboard.
 ///
@@ -145,7 +174,7 @@ impl TransportHandle {
     }
 }
 
-/// Connect to a MonsGeek keyboard and start the transport thread.
+/// Connect to a MonsGeek keyboard in control-only mode and start the transport thread.
 ///
 /// Opens the keyboard's preferred USB VID/PID first, verifies its firmware
 /// device ID via `GET_USB_VERSION`, and falls back to probing other USB devices
@@ -162,19 +191,69 @@ impl TransportHandle {
 /// Returns `TransportError::DeviceNotFound` if no connected USB device matches
 /// the definition's firmware device ID.
 /// Returns `TransportError::Usb` on USB open/claim failure.
-pub fn connect(device: &DeviceDefinition) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
-    let session = open_matching_session(device)?;
+pub fn connect(
+    device: &DeviceDefinition,
+) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
+    connect_with_options(device, TransportOptions::default())
+}
+
+/// Connect to a MonsGeek keyboard with explicit transport ownership options.
+///
+/// In [`TransportMode::ControlOnly`], the transport claims only IF2 and the
+/// event receiver emits hot-plug lifecycle events.
+///
+/// In [`TransportMode::UserspaceInput`], the transport intentionally owns IF0
+/// as well and the event receiver may also emit translated
+/// [`TransportEvent::InputActions`] notifications.
+pub fn connect_with_options(
+    device: &DeviceDefinition,
+    options: TransportOptions,
+) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
+    let session = open_matching_session(device, options.mode)?;
     let (cmd_tx, cmd_rx) = bounded(monsgeek_protocol::timing::dongle::REQUEST_QUEUE_SIZE);
     let (event_tx, event_rx) = bounded(32);
+    let input_processor = match options.mode {
+        TransportMode::ControlOnly => None,
+        TransportMode::UserspaceInput => Some(InputProcessor::new(options.software_debounce_ms)),
+    };
 
-    thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session);
+    thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session, input_processor);
     thread::spawn_hotplug_thread(event_tx, device.vid);
 
     Ok((TransportHandle { cmd_tx }, event_rx))
 }
 
-fn open_matching_session(device: &DeviceDefinition) -> Result<UsbSession, TransportError> {
-    let primary = UsbSession::open(device.vid, device.pid);
+/// Run the native wired recovery path for a device and return its firmware ID.
+///
+/// This is the supported recovery mechanism after transient USB `PIPE` /
+/// timeout states on wired M5W-class devices:
+///
+/// 1. Re-find the device dynamically
+/// 2. Reset and re-open it via [`UsbSession::open_with_mode`]
+/// 3. Verify recovery with `GET_USB_VERSION`
+///
+/// The session is dropped immediately after the verification query so the
+/// kernel can reclaim the normal typing interface if it is available.
+pub fn recover(device: &DeviceDefinition) -> Result<UsbVersionInfo, TransportError> {
+    let session = open_matching_session(device, TransportMode::ControlOnly)?;
+    let usb_version = session.query_usb_version()?;
+
+    if usb_version.device_id_i32() != device.id {
+        return Err(TransportError::Usb(format!(
+            "recovery opened device ID {} but expected {}",
+            usb_version.device_id_i32(),
+            device.id
+        )));
+    }
+
+    Ok(usb_version)
+}
+
+fn open_matching_session(
+    device: &DeviceDefinition,
+    mode: TransportMode,
+) -> Result<UsbSession, TransportError> {
+    let primary = UsbSession::open_with_mode(device.vid, device.pid, mode);
 
     match primary {
         Ok(session) => {
@@ -202,7 +281,7 @@ fn open_matching_session(device: &DeviceDefinition) -> Result<UsbSession, Transp
     }
 
     let info = discovery::probe_device(device)?;
-    UsbSession::open_at(info.bus, info.address)
+    UsbSession::open_at_with_mode(info.bus, info.address, mode)
 }
 
 #[cfg(test)]
@@ -221,6 +300,19 @@ mod tests {
     #[test]
     fn test_connect_exists_with_correct_signature() {
         let _fn_ptr: fn(&DeviceDefinition) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect;
+    }
+
+    #[test]
+    fn test_connect_with_options_exists_with_correct_signature() {
+        let _fn_ptr: fn(
+            &DeviceDefinition,
+            TransportOptions,
+        ) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> = connect_with_options;
+    }
+
+    #[test]
+    fn test_recover_exists_with_correct_signature() {
+        let _fn_ptr: fn(&DeviceDefinition) -> Result<UsbVersionInfo, TransportError> = recover;
     }
 
     #[test]
@@ -248,6 +340,13 @@ mod tests {
             handle.shutdown();
         }
         let _ = check_shutdown as fn(TransportHandle);
+    }
+
+    #[test]
+    fn test_transport_options_default_to_control_only() {
+        let options = TransportOptions::default();
+        assert_eq!(options.mode, TransportMode::ControlOnly);
+        assert_eq!(options.software_debounce_ms, 0);
     }
 
     #[test]

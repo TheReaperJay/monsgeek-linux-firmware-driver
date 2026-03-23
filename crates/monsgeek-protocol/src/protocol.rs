@@ -23,7 +23,7 @@ pub enum ProtocolFamily {
 /// Contains only the command bytes that differ between RY5088 and YiChip.
 /// Shared commands (SET_LEDPARAM, GET_USB_VERSION, GET_MACRO, etc.) use
 /// the constants in [`crate::cmd`] directly.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandTable {
     pub set_reset: u8,
     pub set_profile: u8,

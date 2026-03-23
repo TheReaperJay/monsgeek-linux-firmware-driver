@@ -15,12 +15,22 @@
 //! ```
 //!
 //! All tests are `#[ignore]` to prevent accidental execution in CI.
+//!
+//! Dangerous live-write validation is intentionally excluded from the default
+//! hardware suite. To compile those tests, you must opt in explicitly:
+//! ```sh
+//! MONSGEEK_ENABLE_DANGEROUS_WRITES=1 \
+//! cargo test -p monsgeek-transport \
+//!   --features "hardware dangerous-hardware-writes" \
+//!   --test hardware test_set_get_debounce_round_trip_dangerous \
+//!   -- --ignored --nocapture
+//! ```
 
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry, ProtocolFamily};
+use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry};
 use monsgeek_transport::{connect, validate_write_request, TransportEvent, UsbVersionInfo};
 
 const M5W_DEVICE_ID: i32 = 1308;
@@ -48,6 +58,17 @@ fn load_m5w(registry: &DeviceRegistry) -> &DeviceDefinition {
     registry
         .find_by_id(M5W_DEVICE_ID)
         .expect("M5W (device ID 1308) not found in registry")
+}
+
+#[cfg(feature = "dangerous-hardware-writes")]
+fn require_dangerous_write_opt_in() {
+    let enabled = std::env::var("MONSGEEK_ENABLE_DANGEROUS_WRITES")
+        .map(|value| value == "1")
+        .unwrap_or(false);
+    assert!(
+        enabled,
+        "dangerous live writes are disabled; set MONSGEEK_ENABLE_DANGEROUS_WRITES=1 and re-run with --features 'hardware dangerous-hardware-writes'"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +214,8 @@ fn test_echo_matching() {
     );
 
     // Command 2: GET_DEBOUNCE -- family-specific command byte.
-    let family = ProtocolFamily::detect(Some(&m5w.name), m5w.pid);
-    let get_debounce_cmd = family.commands().get_debounce;
+    let family = m5w.protocol_family();
+    let get_debounce_cmd = m5w.commands().get_debounce;
     println!(
         "Protocol family: {} -> GET_DEBOUNCE = 0x{:02X}",
         family, get_debounce_cmd
@@ -215,7 +236,103 @@ fn test_echo_matching() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: Bounds validation against real M5W device definition (HID-05)
+// Test 5: SET_DEBOUNCE -> GET_DEBOUNCE round trip with restore (DANGEROUS)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dangerous-hardware-writes")]
+#[test]
+#[ignore]
+fn test_set_get_debounce_round_trip_dangerous() {
+    require_dangerous_write_opt_in();
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    let family = m5w.protocol_family();
+    let commands = m5w.commands();
+    let get_debounce_cmd = commands.get_debounce;
+    let set_debounce_cmd = commands.set_debounce;
+
+    let current = handle
+        .send_query(get_debounce_cmd, &[], ChecksumType::Bit7)
+        .expect("GET_DEBOUNCE query failed")[1];
+    let target = match current {
+        0 => 1,
+        50 => 49,
+        value => value.saturating_add(1).min(50),
+    };
+
+    println!(
+        "Protocol family: {} -> SET_DEBOUNCE = 0x{:02X}, GET_DEBOUNCE = 0x{:02X}, current={}ms target={}ms",
+        family, set_debounce_cmd, get_debounce_cmd, current, target
+    );
+
+    let test_result = (|| -> Result<(), String> {
+        handle
+            .send_fire_and_forget(set_debounce_cmd, &[target], ChecksumType::Bit7)
+            .map_err(|e| format!("SET_DEBOUNCE failed: {e}"))?;
+
+        let updated = handle
+            .send_query(get_debounce_cmd, &[], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_DEBOUNCE after set failed: {e}"))?;
+
+        if updated[0] != get_debounce_cmd {
+            return Err(format!(
+                "GET_DEBOUNCE echo mismatch after set: expected 0x{:02X}, got 0x{:02X}",
+                get_debounce_cmd, updated[0]
+            ));
+        }
+
+        if updated[1] != target {
+            return Err(format!(
+                "debounce round trip mismatch: wrote {}ms, read back {}ms",
+                target, updated[1]
+            ));
+        }
+
+        Ok(())
+    })();
+
+    let restore_result = (|| -> Result<(), String> {
+        handle
+            .send_fire_and_forget(set_debounce_cmd, &[current], ChecksumType::Bit7)
+            .map_err(|e| format!("failed to restore original debounce {}ms: {e}", current))?;
+
+        let restored = handle
+            .send_query(get_debounce_cmd, &[], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_DEBOUNCE after restore failed: {e}"))?;
+
+        if restored[0] != get_debounce_cmd {
+            return Err(format!(
+                "GET_DEBOUNCE echo mismatch after restore: expected 0x{:02X}, got 0x{:02X}",
+                get_debounce_cmd, restored[0]
+            ));
+        }
+
+        if restored[1] != current {
+            return Err(format!(
+                "failed to restore debounce: expected {}ms, read back {}ms",
+                current, restored[1]
+            ));
+        }
+
+        println!("Debounce round trip verified and restored to {}ms", current);
+        Ok(())
+    })();
+
+    handle.shutdown();
+
+    if let Err(err) = restore_result {
+        panic!("{err}");
+    }
+    if let Err(err) = test_result {
+        panic!("{err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Bounds validation against real M5W device definition (HID-05)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -262,7 +379,7 @@ fn test_bounds_validation() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Udev rules file correctness (HID-06)
+// Test 7: Udev rules file correctness (HID-06)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -298,7 +415,7 @@ fn test_udev_rules_file() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Hot-plug detection (HID-01, hot-plug aspect)
+// Test 8: Hot-plug detection (HID-01, hot-plug aspect)
 //
 // MUST run last — unplugging the keyboard disrupts the device state
 // (new address, new device node, udev re-applies permissions).
@@ -309,11 +426,6 @@ fn test_udev_rules_file() {
 #[ignore]
 fn z_test_hot_plug_detection() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if !rusb::has_hotplug() {
-        println!("SKIP: hot-plug not supported on this platform");
-        return;
-    }
-
     let registry = load_registry();
     let m5w = load_m5w(&registry);
     let (handle, event_rx) = connect(m5w)
@@ -341,6 +453,9 @@ fn z_test_hot_plug_detection() {
                     saw_arrived = true;
                     break;
                 }
+            }
+            Ok(TransportEvent::InputActions { actions }) => {
+                println!("InputActions observed during hot-plug test: {} actions", actions.len());
             }
             Err(_) => {
                 // Timeout on recv -- continue waiting until deadline.

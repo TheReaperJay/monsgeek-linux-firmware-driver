@@ -15,7 +15,10 @@ use monsgeek_protocol::ChecksumType;
 
 use crate::error::TransportError;
 use crate::flow_control;
+use crate::input::{InputProcessor, KeyAction};
 use crate::usb::UsbSession;
+
+const INPUT_POLL_TIMEOUT_MS: u64 = 10;
 
 /// Request sent from `TransportHandle` to the transport thread via bounded channel.
 pub(crate) struct CommandRequest {
@@ -31,9 +34,11 @@ pub(crate) struct CommandRequest {
     pub response_tx: Sender<Result<Option<[u8; 64]>, TransportError>>,
 }
 
-/// Events emitted by the transport thread for device lifecycle notifications.
+/// Events emitted by the transport layer for device lifecycle and optional
+/// userspace-input notifications.
 ///
-/// Consumers receive these via the `Receiver<TransportEvent>` returned by `connect()`.
+/// Consumers receive these via the `Receiver<TransportEvent>` returned by
+/// `connect()` or `connect_with_options()`.
 #[derive(Debug, Clone)]
 pub enum TransportEvent {
     /// A MonsGeek device was connected to the USB bus.
@@ -47,6 +52,10 @@ pub enum TransportEvent {
     DeviceLeft {
         bus: u8,
         address: u8,
+    },
+    /// Translated key actions from IF0 when userspace-input mode is active.
+    InputActions {
+        actions: Vec<KeyAction>,
     },
 }
 
@@ -64,13 +73,14 @@ pub enum TransportEvent {
 /// * `session` - The USB session to use for all HID I/O
 pub(crate) fn spawn_transport_thread(
     cmd_rx: Receiver<CommandRequest>,
-    _event_tx: Sender<TransportEvent>,
+    event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    input_processor: Option<InputProcessor>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("monsgeek-transport".into())
         .spawn(move || {
-            transport_loop(cmd_rx, session);
+            transport_loop(cmd_rx, event_tx, session, input_processor);
         })
         .expect("failed to spawn transport thread")
 }
@@ -78,33 +88,93 @@ pub(crate) fn spawn_transport_thread(
 /// Main loop for the transport thread.
 ///
 /// Processes commands serially, enforcing minimum inter-command delay.
-fn transport_loop(cmd_rx: Receiver<CommandRequest>, session: UsbSession) {
+fn transport_loop(
+    cmd_rx: Receiver<CommandRequest>,
+    event_tx: Sender<TransportEvent>,
+    session: UsbSession,
+    mut input_processor: Option<InputProcessor>,
+) {
     // Initialize to past time so the first command executes immediately.
     let mut last_command = Instant::now() - Duration::from_millis(200);
 
-    while let Ok(req) = cmd_rx.recv() {
-        // Enforce minimum inter-command delay (100ms for yc3121 firmware safety).
-        let elapsed = last_command.elapsed();
-        let min_delay = Duration::from_millis(timing::DEFAULT_DELAY_MS);
-        if elapsed < min_delay {
-            std::thread::sleep(min_delay - elapsed);
-        }
-
-        let result = if req.is_query {
-            flow_control::query_command(&session, req.cmd, &req.data, req.checksum)
-                .map(Some)
+    loop {
+        let request = if input_processor.is_some() {
+            match cmd_rx.recv_timeout(Duration::from_millis(INPUT_POLL_TIMEOUT_MS)) {
+                Ok(req) => Some(req),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    pump_input(&session, input_processor.as_mut(), &event_tx);
+                    None
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
         } else {
-            flow_control::send_command(&session, req.cmd, &req.data, req.checksum)
-                .map(|()| None)
+            match cmd_rx.recv() {
+                Ok(req) => Some(req),
+                Err(_) => break,
+            }
         };
 
-        last_command = Instant::now();
+        let Some(req) = request else {
+            continue;
+        };
 
-        // Send result back; ignore error (caller may have dropped their receiver).
-        let _ = req.response_tx.send(result);
+        handle_command(req, &session, &mut last_command);
     }
 
     log::info!("Transport thread shutting down");
+}
+
+fn handle_command(req: CommandRequest, session: &UsbSession, last_command: &mut Instant) {
+    // Enforce minimum inter-command delay (100ms for yc3121 firmware safety).
+    let elapsed = last_command.elapsed();
+    let min_delay = Duration::from_millis(timing::DEFAULT_DELAY_MS);
+    if elapsed < min_delay {
+        std::thread::sleep(min_delay - elapsed);
+    }
+
+    let result = if req.is_query {
+        flow_control::query_command(session, req.cmd, &req.data, req.checksum).map(Some)
+    } else {
+        flow_control::send_command(session, req.cmd, &req.data, req.checksum).map(|()| None)
+    };
+
+    *last_command = Instant::now();
+
+    // Send result back; ignore error (caller may have dropped their receiver).
+    let _ = req.response_tx.send(result);
+}
+
+fn pump_input(
+    session: &UsbSession,
+    input_processor: Option<&mut InputProcessor>,
+    event_tx: &Sender<TransportEvent>,
+) {
+    let Some(processor) = input_processor else {
+        return;
+    };
+
+    let mut report = [0u8; 8];
+    match session.read_report_with_timeout(
+        &mut report,
+        Duration::from_millis(INPUT_POLL_TIMEOUT_MS),
+    ) {
+        Ok(n) if n >= 8 => {
+            let actions = processor.process_report(&report);
+            if !actions.is_empty() {
+                let _ = event_tx.send(TransportEvent::InputActions { actions });
+            }
+        }
+        Ok(_) => {}
+        Err(TransportError::Disconnected) => {
+            let actions = processor.release_all_keys();
+            if !actions.is_empty() {
+                let _ = event_tx.send(TransportEvent::InputActions { actions });
+            }
+        }
+        Err(err) => {
+            log::debug!("Userspace input poll failed: {}", err);
+        }
+    }
 }
 
 /// Spawn a dedicated thread for USB hot-plug event monitoring via udev.
@@ -322,11 +392,30 @@ mod tests {
     }
 
     #[test]
+    fn test_transport_event_input_actions() {
+        let event = TransportEvent::InputActions {
+            actions: vec![KeyAction {
+                keycode: 30,
+                value: 1,
+            }],
+        };
+        match event {
+            TransportEvent::InputActions { actions } => {
+                assert_eq!(actions.len(), 1);
+                assert_eq!(actions[0].keycode, 30);
+                assert_eq!(actions[0].value, 1);
+            }
+            _ => panic!("expected InputActions"),
+        }
+    }
+
+    #[test]
     fn test_spawn_transport_thread_exists_with_correct_signature() {
         let _fn_ptr: fn(
             crossbeam_channel::Receiver<CommandRequest>,
             crossbeam_channel::Sender<TransportEvent>,
             crate::usb::UsbSession,
+            Option<InputProcessor>,
         ) -> std::thread::JoinHandle<()> = spawn_transport_thread;
     }
 }

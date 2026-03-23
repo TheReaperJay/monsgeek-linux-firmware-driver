@@ -4,7 +4,9 @@ use std::time::Instant;
 use crate::keymap::{HID_TO_LINUX, MODIFIER_KEYCODES};
 
 /// Abstract key action output from HID report processing.
-/// Plan 03 maps these to InputEvent writes on the uinput device.
+/// Later layers can map these to input-subsystem events when userspace-input
+/// mode is intentionally active.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyAction {
     pub keycode: u16,
     pub value: i32,
