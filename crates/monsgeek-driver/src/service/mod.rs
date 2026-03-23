@@ -320,6 +320,11 @@ impl DriverService {
             .await
             .map_err(Status::internal)
     }
+
+    #[doc(hidden)]
+    pub fn emit_device_list_for_test(&self, list: DeviceList) {
+        let _ = self.device_tx.send(list);
+    }
 }
 
 fn pick_device_definition(

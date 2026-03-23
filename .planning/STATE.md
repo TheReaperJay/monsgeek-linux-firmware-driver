@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Ready to execute
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-03-23T17:02:27.532Z"
+status: Awaiting manual verification
+stopped_at: Completed automated execution for 03-03-PLAN.md, awaiting manual browser checkpoint
+last_updated: "2026-03-24T02:05:00.000Z"
 progress:
   total_phases: 8
   completed_phases: 2
   total_plans: 8
-  completed_plans: 6
+  completed_plans: 8
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md), and [.planning/REQUIREMENTS.md](./REQUIREMENTS.md)
 
 **Core value:** The MonsGeek configurator must work on Linux without requiring a Windows machine.
-**Current focus:** Phase 03 — grpc-web-bridge
+**Current focus:** Phase 03 manual browser checkpoint (`app.monsgeek.com`) then transition to Phase 04
 
 ## Current Position
 
-Phase: 03 (grpc-web-bridge) — EXECUTING
-Plan: 2 of 3
+Phase: 03 (grpc-web-bridge) — AUTOMATED WORK COMPLETE
+Plan: 3 of 3 (manual checkpoint pending)
 
 ## What Is Verified
 
@@ -38,6 +38,16 @@ Plan: 2 of 3
 - `udev` is the reliable hot-plug mechanism in this environment
 - Transport cleanup must return `IF0` to the kernel unless full userspace-input mode is intentional
 - Native recovery (`recover()`) restores the wired M5W with reset-then-reopen plus `GET_USB_VERSION` verification
+- gRPC bridge split send/read semantics are covered by deterministic integration tests via mock transport
+- gRPC bridge contract/runtime suite now includes:
+  - `grpc_full_service_contract_present`
+  - `grpc_server_starts_http1`
+  - `grpc_cors_headers_present`
+  - `grpc_send_raw_feature_forwards`
+  - `grpc_read_raw_feature_returns_data`
+  - `grpc_watch_dev_list_init_add_remove`
+  - `grpc_get_version_shape`
+  - `grpc_db_insert_get_roundtrip`
 
 ## Current Engineering Reality
 
@@ -71,22 +81,28 @@ Residual follow-up after Phase 2:
 - The transport must not steal typing accidentally; `IF0` ownership must be explicit
 - Live feature writes are not part of default transport validation; they require an explicit dangerous gate and a native recovery path
 - Phase 3 should build on control-only transport by default and treat userspace-input as a separate runtime mode, not a baseline assumption
+- Phase 3 closeout requires explicit human browser verification before marking Nyquist compliant
 
 ## Pending Todos
 
-- Begin Phase 3 planning for the gRPC-Web bridge on `localhost:3814`
-- Carry firmware-ID-first identity into the bridge's device enumeration APIs
-- Keep dongle support explicitly out of the MVP until the transport path is implemented and validated
+- Run manual browser checkpoint:
+  - start bridge on `127.0.0.1:3814`
+  - open `https://app.monsgeek.com`
+  - confirm device appears and at least one command roundtrip succeeds
+  - confirm unplug/replug updates in UI
+- If checkpoint passes: mark Phase 03 complete and set **Ready for Phase 04**
+- If checkpoint fails: record blocker and apply targeted fix before phase closeout
 
 ## Blockers / Concerns
 
-- No Phase 2 blockers remain for the wired M5W control path
+- No automated blockers remain for Phase 03
+- Manual browser checkpoint is still required before Phase 03 can be declared closed
 - Device-specific advanced features must be treated as per-profile capabilities, not assumed globally across the FEA family
 - Dongle support is not yet implemented and must not be implied as already working
 - Dangerous live writes can still wedge hardware if used carelessly; they remain opt-in and should stay out of routine development flows
 
 ## Session Continuity
 
-Last major checkpoint: 2026-03-23  
-Stopped at: Completed 03-01-PLAN.md
-Next recommended action: start Phase 3 planning and execution for the gRPC-Web bridge
+Last major checkpoint: 2026-03-24  
+Stopped at: Completed 03-03 automated validation and state update
+Next recommended action: run manual browser checkpoint and finalize Phase 03 as Ready for Phase 04

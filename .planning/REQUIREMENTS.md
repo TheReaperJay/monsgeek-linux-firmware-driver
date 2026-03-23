@@ -20,11 +20,11 @@ Requirements for the current milestone. These focus on a working Linux transport
 ### gRPC Bridge
 
 - [x] **GRPC-01**: Server listens on localhost:3814 and accepts gRPC-Web connections from browser clients
-- [ ] **GRPC-02**: Server implements `sendRawFeature` RPC to forward raw HID commands to the keyboard
-- [ ] **GRPC-03**: Server implements `readRawFeature` RPC to read raw HID responses from the keyboard
-- [ ] **GRPC-04**: Server implements `watchDevList` RPC to stream device connect/disconnect events
-- [ ] **GRPC-05**: Server implements `getVersion` RPC returning driver version info
-- [ ] **GRPC-06**: Server implements `insertDb` and `getItemFromDb` RPCs for web app key-value storage
+- [x] **GRPC-02**: Server implements `sendRawFeature` RPC to forward raw HID commands to the keyboard
+- [x] **GRPC-03**: Server implements `readRawFeature` RPC to read raw HID responses from the keyboard
+- [x] **GRPC-04**: Server implements `watchDevList` RPC to stream device connect/disconnect events
+- [x] **GRPC-05**: Server implements `getVersion` RPC returning driver version info
+- [x] **GRPC-06**: Server implements `insertDb` and `getItemFromDb` RPCs for web app key-value storage
 - [x] **GRPC-07**: Server sends the correct CORS headers so the MonsGeek web configurator can connect from browser context
 - [x] **GRPC-08**: Server matches the Windows `iot_driver.exe` proto contract exactly, including upstream field-name quirks
 - [ ] **GRPC-09**: Systemd service unit enables auto-start on boot with managed lifecycle
@@ -116,11 +116,11 @@ Deferred until the core wired bridge is stable.
 | HID-05 | Phase 2 | Complete |
 | HID-06 | Phase 2 | Complete |
 | GRPC-01 | Phase 3 | Complete |
-| GRPC-02 | Phase 3 | Pending |
-| GRPC-03 | Phase 3 | Pending |
-| GRPC-04 | Phase 3 | Pending |
-| GRPC-05 | Phase 3 | Pending |
-| GRPC-06 | Phase 3 | Pending |
+| GRPC-02 | Phase 3 | Complete |
+| GRPC-03 | Phase 3 | Complete |
+| GRPC-04 | Phase 3 | Complete |
+| GRPC-05 | Phase 3 | Complete |
+| GRPC-06 | Phase 3 | Complete |
 | GRPC-07 | Phase 3 | Complete |
 | GRPC-08 | Phase 3 | Complete |
 | KEYS-01 | Phase 4 | Pending |
