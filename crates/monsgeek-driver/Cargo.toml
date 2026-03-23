@@ -6,3 +6,15 @@ edition = "2024"
 [dependencies]
 monsgeek-protocol = { path = "../monsgeek-protocol" }
 monsgeek-transport = { path = "../monsgeek-transport" }
+tonic = "0.12"
+tonic-web = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["cors"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+tonic-build = "0.12"
