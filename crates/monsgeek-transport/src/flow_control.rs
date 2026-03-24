@@ -6,9 +6,9 @@
 //!
 //! Both functions build the HID frame via `monsgeek_protocol::build_command` and
 //! strip the report ID byte before passing to `UsbSession::vendor_set_report`.
-//! The 100ms inter-command delay is enforced at the transport thread level
-//! (see `thread.rs`), not here — but `query_command` does sleep after SET_REPORT
-//! to give the firmware time to prepare the response before GET_REPORT.
+//! The centralized `CommandController` owns cross-command timing policy.
+//! `query_command` still sleeps after SET_REPORT to give firmware time to
+//! prepare the response before GET_REPORT.
 
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ use crate::usb::UsbSession;
 ///
 /// Returns `TransportError::EchoMismatch` if all retries exhaust without a match.
 /// Returns `TransportError::Usb` if any USB transfer fails fatally.
-pub fn query_command(
+pub(crate) fn query_command(
     session: &UsbSession,
     cmd_byte: u8,
     data: &[u8],
@@ -64,16 +64,19 @@ pub fn query_command(
     })
 }
 
-/// Send a command without reading a response (fire-and-forget with retry).
+/// Send a command without reading a response (fire-and-forget).
 ///
-/// Builds a 65-byte frame via `build_command`, sends `&frame[1..]` (64 bytes,
-/// skipping the report ID) via `vendor_set_report`. On success, returns immediately.
-/// On USB error, retries up to `SEND_RETRIES` (3) times.
+/// This matches the reference driver behavior for SET commands:
+/// issue SET_REPORT and return success/failure for that write only.
+/// Any follow-up reads are handled explicitly by query/read paths.
+///
+/// Builds a 65-byte frame via `build_command`, then sends `&frame[1..]`
+/// (64 bytes, skipping the report ID) via `vendor_set_report`.
 ///
 /// # Errors
 ///
-/// Returns the last `TransportError::Usb` if all retries fail.
-pub fn send_command(
+/// Returns `TransportError::Usb` if the SET_REPORT fails after retries.
+pub(crate) fn send_command(
     session: &UsbSession,
     cmd_byte: u8,
     data: &[u8],
@@ -93,6 +96,9 @@ pub fn send_command(
                     e
                 );
                 last_err = Some(e);
+                if attempt + 1 < timing::SEND_RETRIES {
+                    std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
+                }
             }
         }
     }

@@ -1,0 +1,22 @@
+{
+  "id": 2949,
+  "vid": 12625,
+  "pid": 20528,
+  "name": "ry5088_akko_m1v5he_3m_8k_8k",
+  "displayName": "M1 V5 TMR",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 82,
+  "keyLayoutName": "Common82_M1_V5_TMR",
+  "layer": 2,
+  "fnSysLayer": {
+    "win": 1,
+    "mac": 1
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hotSwap": true
+}

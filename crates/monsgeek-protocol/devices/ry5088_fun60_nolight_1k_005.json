@@ -1,0 +1,22 @@
+{
+  "id": 2299,
+  "vid": 12625,
+  "pid": 20526,
+  "name": "ry5088_fun60_nolight_1k_005",
+  "displayName": "FUN60",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 61,
+  "keyLayoutName": "Common61_gk06",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hotSwap": true
+}

@@ -61,6 +61,24 @@ fn load_m5w(registry: &DeviceRegistry) -> &DeviceDefinition {
 }
 
 #[cfg(feature = "dangerous-hardware-writes")]
+fn decode_debounce(get_debounce_cmd: u8, response: &[u8; 64]) -> u8 {
+    if get_debounce_cmd == 0x91 {
+        response[2]
+    } else {
+        response[1]
+    }
+}
+
+#[cfg(feature = "dangerous-hardware-writes")]
+fn build_set_debounce_payload(set_debounce_cmd: u8, value: u8) -> Vec<u8> {
+    if set_debounce_cmd == 0x11 {
+        vec![0, value]
+    } else {
+        vec![value]
+    }
+}
+
+#[cfg(feature = "dangerous-hardware-writes")]
 fn require_dangerous_write_opt_in() {
     let enabled = std::env::var("MONSGEEK_ENABLE_DANGEROUS_WRITES")
         .map(|value| value == "1")
@@ -255,12 +273,9 @@ fn test_set_get_debounce_round_trip_dangerous() {
 
     let current = handle
         .send_query(get_debounce_cmd, &[], ChecksumType::Bit7)
-        .expect("GET_DEBOUNCE query failed")[1];
-    let target = match current {
-        0 => 1,
-        50 => 49,
-        value => value.saturating_add(1).min(50),
-    };
+        .map(|r| decode_debounce(get_debounce_cmd, &r))
+        .expect("GET_DEBOUNCE query failed");
+    let target = 1u8;
 
     println!(
         "Protocol family: {} -> SET_DEBOUNCE = 0x{:02X}, GET_DEBOUNCE = 0x{:02X}, current={}ms target={}ms",
@@ -268,8 +283,9 @@ fn test_set_get_debounce_round_trip_dangerous() {
     );
 
     let test_result = (|| -> Result<(), String> {
+        let set_payload = build_set_debounce_payload(set_debounce_cmd, target);
         handle
-            .send_fire_and_forget(set_debounce_cmd, &[target], ChecksumType::Bit7)
+            .send_fire_and_forget(set_debounce_cmd, &set_payload, ChecksumType::Bit7)
             .map_err(|e| format!("SET_DEBOUNCE failed: {e}"))?;
 
         let updated = handle
@@ -283,10 +299,11 @@ fn test_set_get_debounce_round_trip_dangerous() {
             ));
         }
 
-        if updated[1] != target {
+        let updated_value = decode_debounce(get_debounce_cmd, &updated);
+        if updated_value != target {
             return Err(format!(
                 "debounce round trip mismatch: wrote {}ms, read back {}ms",
-                target, updated[1]
+                target, updated_value
             ));
         }
 
@@ -294,8 +311,9 @@ fn test_set_get_debounce_round_trip_dangerous() {
     })();
 
     let restore_result = (|| -> Result<(), String> {
+        let restore_payload = build_set_debounce_payload(set_debounce_cmd, current);
         handle
-            .send_fire_and_forget(set_debounce_cmd, &[current], ChecksumType::Bit7)
+            .send_fire_and_forget(set_debounce_cmd, &restore_payload, ChecksumType::Bit7)
             .map_err(|e| format!("failed to restore original debounce {}ms: {e}", current))?;
 
         let restored = handle
@@ -309,10 +327,11 @@ fn test_set_get_debounce_round_trip_dangerous() {
             ));
         }
 
-        if restored[1] != current {
+        let restored_value = decode_debounce(get_debounce_cmd, &restored);
+        if restored_value != current {
             return Err(format!(
                 "failed to restore debounce: expected {}ms, read back {}ms",
-                current, restored[1]
+                current, restored_value
             ));
         }
 

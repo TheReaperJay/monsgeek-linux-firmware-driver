@@ -1,0 +1,23 @@
+{
+  "id": 2845,
+  "vid": 12625,
+  "pid": 20528,
+  "name": "ry5088_akko_m2v5_3m_8k_8k",
+  "displayName": "M2 V5 HE",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 98,
+  "keyLayoutName": "Common98_MonsGeek_M2V5",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hasSideLight": true,
+  "hotSwap": true
+}

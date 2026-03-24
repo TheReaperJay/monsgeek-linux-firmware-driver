@@ -14,16 +14,16 @@
 //!                                                    |
 //!                                           [Transport Thread]
 //!                                                    |
-//!                                       flow_control::query_command
-//!                                       flow_control::send_command
+//!                                           [CommandController]
 //!                                                    |
 //!                                     [UsbSession (mode-selected interfaces)]
 //! ```
 
 pub mod bounds;
+mod controller;
 pub mod discovery;
 pub mod error;
-pub mod flow_control;
+mod flow_control;
 pub mod input;
 pub mod keycodes;
 pub mod keymap;
@@ -39,6 +39,8 @@ pub use usb::{SessionMode as TransportMode, UsbSession, UsbVersionInfo};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use monsgeek_protocol::{ChecksumType, DeviceDefinition};
+
+use crate::controller::{CommandController, CommandPolicy};
 
 /// Configuration for opening a transport session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,8 +74,9 @@ impl TransportOptions {
 /// Handle for sending commands to a connected MonsGeek keyboard.
 ///
 /// Clone this handle to share across async tasks or threads. All commands
-/// are serialized through the transport thread, which enforces a minimum
-/// 100ms inter-command delay to satisfy the yc3121 firmware requirement.
+/// are serialized through the transport thread, and every command operation
+/// is executed by the internal command controller with mandatory timing
+/// enforcement to satisfy the yc3121 firmware requirement.
 ///
 /// # Example
 ///
@@ -98,8 +101,8 @@ impl TransportHandle {
     /// Send a query command and wait for the echo-matched response.
     ///
     /// The command is sent through the transport thread's channel. The thread
-    /// calls `flow_control::query_command`, which retries up to `QUERY_RETRIES`
-    /// (5) times until the response's echo byte matches `cmd`.
+    /// routes it through the internal `CommandController`, which enforces
+    /// sanitization, retry behavior, and mandatory command spacing.
     ///
     /// # Errors
     ///
@@ -134,8 +137,8 @@ impl TransportHandle {
     /// Send a fire-and-forget command without waiting for a response.
     ///
     /// The command is sent through the transport thread's channel. The thread
-    /// calls `flow_control::send_command`, which retries up to `SEND_RETRIES`
-    /// (3) times on USB error.
+    /// routes it through the internal `CommandController`, which enforces
+    /// sanitization, retry behavior, and mandatory command spacing.
     ///
     /// # Errors
     ///
@@ -246,16 +249,9 @@ pub fn connect_at_with_options(
     options: TransportOptions,
 ) -> Result<(TransportHandle, Receiver<TransportEvent>), TransportError> {
     let session = UsbSession::open_at_with_mode(bus, address, options.mode)?;
-    let usb_version = session.query_usb_version()?;
-    if usb_version.device_id_i32() != device.id {
-        return Err(TransportError::Usb(format!(
-            "runtime candidate {:03}:{:03} reported device ID {} but expected {}",
-            bus,
-            address,
-            usb_version.device_id_i32(),
-            device.id
-        )));
-    }
+    // For runtime path-selected connects, the caller already resolved bus/address
+    // from discovery/path registry. Avoid an extra blocking firmware query here;
+    // repeated open-time verification retries can cause reset loops on yc3121.
     spawn_transport(device, session, options)
 }
 
@@ -271,7 +267,14 @@ fn spawn_transport(
         TransportMode::UserspaceInput => Some(InputProcessor::new(options.software_debounce_ms)),
     };
 
-    thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session, input_processor);
+    let command_policy = CommandPolicy::for_device(device);
+    thread::spawn_transport_thread(
+        cmd_rx,
+        event_tx.clone(),
+        session,
+        command_policy,
+        input_processor,
+    );
     thread::spawn_hotplug_thread(event_tx, device.vid);
 
     Ok((TransportHandle { cmd_tx }, event_rx))
@@ -290,7 +293,8 @@ fn spawn_transport(
 /// kernel can reclaim the normal typing interface if it is available.
 pub fn recover(device: &DeviceDefinition) -> Result<UsbVersionInfo, TransportError> {
     let session = open_matching_session(device, TransportMode::ControlOnly)?;
-    let usb_version = session.query_usb_version()?;
+    let mut controller = CommandController::new(session);
+    let usb_version = controller.query_usb_version()?;
 
     if usb_version.device_id_i32() != device.id {
         return Err(TransportError::Usb(format!(
@@ -311,18 +315,40 @@ fn open_matching_session(
 
     match primary {
         Ok(session) => {
-            let usb_version = session.query_usb_version()?;
-            if usb_version.device_id_i32() == device.id {
-                return Ok(session);
+            let mut controller = CommandController::new(session);
+            match controller.query_usb_version() {
+                Ok(usb_version) if usb_version.device_id_i32() == device.id => {
+                    return Ok(controller.into_session());
+                }
+                Ok(usb_version) => {
+                    log::warn!(
+                        "USB: preferred VID 0x{:04X} PID 0x{:04X} reported device ID {} instead of {}. Probing by firmware ID.",
+                        device.vid,
+                        device.pid,
+                        usb_version.device_id,
+                        device.id
+                    );
+                }
+                Err(e) => {
+                    // First command failed — likely a STALL from kernel's
+                    // IF1/IF2 descriptor probing. Reset and retry once.
+                    log::warn!(
+                        "USB: first command failed ({}), attempting STALL recovery via reset",
+                        e
+                    );
+                    let session = controller.into_session().reset_and_reopen()?;
+                    let mut controller = CommandController::new(session);
+                    let usb_version = controller.query_usb_version()?;
+                    if usb_version.device_id_i32() == device.id {
+                        return Ok(controller.into_session());
+                    }
+                    log::warn!(
+                        "USB: post-reset device ID {} != expected {}. Probing by firmware ID.",
+                        usb_version.device_id,
+                        device.id
+                    );
+                }
             }
-
-            log::warn!(
-                "USB: preferred VID 0x{:04X} PID 0x{:04X} reported device ID {} instead of {}. Probing by firmware ID.",
-                device.vid,
-                device.pid,
-                usb_version.device_id,
-                device.id
-            );
         }
         Err(TransportError::DeviceNotFound { .. }) => {
             log::info!(

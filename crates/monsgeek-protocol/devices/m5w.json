@@ -17,11 +17,12 @@
   "hotSwap": false,
   "chipFamily": "YC3121",
   "commandOverrides": {
-    "setDebounce": 6,
-    "getDebounce": 134,
-    "setReport": 3,
-    "getReport": 131,
-    "setSleeptime": 17,
-    "getSleeptime": 145
+    "setDebounce": 17,
+    "getDebounce": 145,
+    "setMacro": 11,
+    "setKboption": 6,
+    "getKboption": 134,
+    "setSleeptime": 18,
+    "getSleeptime": 146
   }
 }

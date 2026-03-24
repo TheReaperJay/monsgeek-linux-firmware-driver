@@ -1,0 +1,21 @@
+{
+  "id": 983,
+  "vid": 12625,
+  "pid": 16405,
+  "name": "yc500_m1wnosled_soc",
+  "displayName": "M1W",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 82,
+  "keyLayoutName": "Common82_SG9000_v3",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "noMagneticSwitch": true,
+  "hasLightLayout": true
+}

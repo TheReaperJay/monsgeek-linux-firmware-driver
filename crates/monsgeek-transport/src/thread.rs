@@ -1,20 +1,20 @@
 //! Dedicated transport thread for serialized HID I/O with throttling and hot-plug.
 //!
 //! The transport thread owns the `UsbSession` and processes `CommandRequest`s
-//! from a bounded channel, enforcing a minimum 100ms inter-command delay.
+//! from a bounded channel. Timing and retry policy are enforced by the
+//! centralized command controller.
 //! A separate hot-plug thread monitors USB bus events for MonsGeek device
 //! arrivals and departures.
 
 use std::os::unix::io::AsRawFd;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
 use monsgeek_protocol::ChecksumType;
-use monsgeek_protocol::timing;
 
+use crate::controller::{CommandController, CommandPolicy};
 use crate::error::TransportError;
-use crate::flow_control;
 use crate::input::{InputProcessor, KeyAction};
 use crate::usb::UsbSession;
 
@@ -65,11 +65,12 @@ pub enum TransportEvent {
     InputActions { actions: Vec<KeyAction> },
 }
 
-/// Spawn the transport thread that processes commands serially with throttling.
+/// Spawn the transport thread that processes commands serially.
 ///
-/// The thread runs a recv loop on `cmd_rx`, enforcing a minimum 100ms delay
-/// between consecutive commands (tracked via `Instant`). When the sender side
-/// of `cmd_rx` is dropped, the thread exits cleanly.
+/// The thread runs a recv loop on `cmd_rx`; each command is delegated to the
+/// internal command controller, which performs sanitization and timing
+/// enforcement. When the sender side of `cmd_rx` is dropped, the thread exits
+/// cleanly.
 ///
 /// # Arguments
 ///
@@ -81,34 +82,35 @@ pub(crate) fn spawn_transport_thread(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    policy: CommandPolicy,
     input_processor: Option<InputProcessor>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("monsgeek-transport".into())
         .spawn(move || {
-            transport_loop(cmd_rx, event_tx, session, input_processor);
+            transport_loop(cmd_rx, event_tx, session, policy, input_processor);
         })
         .expect("failed to spawn transport thread")
 }
 
 /// Main loop for the transport thread.
 ///
-/// Processes commands serially, enforcing minimum inter-command delay.
+/// Processes commands serially through the centralized command controller.
 fn transport_loop(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    policy: CommandPolicy,
     mut input_processor: Option<InputProcessor>,
 ) {
-    // Initialize to past time so the first command executes immediately.
-    let mut last_command = Instant::now() - Duration::from_millis(200);
+    let mut controller = CommandController::with_policy(session, policy);
 
     loop {
         let request = if input_processor.is_some() {
             match cmd_rx.recv_timeout(Duration::from_millis(INPUT_POLL_TIMEOUT_MS)) {
                 Ok(req) => Some(req),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    pump_input(&session, input_processor.as_mut(), &event_tx);
+                    pump_input(controller.session(), input_processor.as_mut(), &event_tx);
                     None
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
@@ -124,31 +126,20 @@ fn transport_loop(
             continue;
         };
 
-        handle_command(req, &session, &mut last_command);
+        handle_command(req, &mut controller);
     }
 
     log::info!("Transport thread shutting down");
 }
 
-fn handle_command(req: CommandRequest, session: &UsbSession, last_command: &mut Instant) {
-    // Enforce minimum inter-command delay (100ms for yc3121 firmware safety).
-    let elapsed = last_command.elapsed();
-    let min_delay = Duration::from_millis(timing::DEFAULT_DELAY_MS);
-    if elapsed < min_delay {
-        std::thread::sleep(min_delay - elapsed);
-    }
-
+fn handle_command(req: CommandRequest, controller: &mut CommandController) {
     let result = match req.mode {
-        CommandMode::Query => {
-            flow_control::query_command(session, req.cmd, &req.data, req.checksum).map(Some)
-        }
-        CommandMode::Send => {
-            flow_control::send_command(session, req.cmd, &req.data, req.checksum).map(|()| None)
-        }
-        CommandMode::Read => session.vendor_get_report().map(Some),
+        CommandMode::Query => controller.query(req.cmd, &req.data, req.checksum).map(Some),
+        CommandMode::Send => controller
+            .send(req.cmd, &req.data, req.checksum)
+            .map(|()| None),
+        CommandMode::Read => controller.read_feature_report().map(Some),
     };
-
-    *last_command = Instant::now();
 
     // Send result back; ignore error (caller may have dropped their receiver).
     let _ = req.response_tx.send(result);
@@ -424,6 +415,7 @@ mod tests {
             crossbeam_channel::Receiver<CommandRequest>,
             crossbeam_channel::Sender<TransportEvent>,
             crate::usb::UsbSession,
+            crate::controller::CommandPolicy,
             Option<InputProcessor>,
         ) -> std::thread::JoinHandle<()> = spawn_transport_thread;
     }

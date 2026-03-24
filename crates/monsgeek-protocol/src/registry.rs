@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn test_load_m5w_from_devices_dir() {
         let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
-        assert_eq!(registry.len(), 1);
+        assert!(!registry.is_empty());
 
         let device = registry.find_by_id(1308).expect("M5W not found by ID");
         assert_eq!(device.display_name, "M5W");
@@ -121,8 +121,8 @@ mod tests {
     fn test_find_by_vid_pid_m5w() {
         let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
         let matches = registry.find_by_vid_pid(0x3151, 0x4015);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].id, 1308);
+        assert!(!matches.is_empty());
+        assert!(matches.iter().any(|device| device.id == 1308));
     }
 
     #[test]

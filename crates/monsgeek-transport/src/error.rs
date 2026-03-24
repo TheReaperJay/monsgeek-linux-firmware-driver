@@ -53,6 +53,16 @@ pub enum TransportError {
     /// Transport command channel was closed (transport thread shut down).
     #[error("transport channel closed")]
     ChannelClosed,
+
+    /// Command payload exceeded fixed HID report capacity.
+    #[error(
+        "invalid command payload for 0x{cmd:02X}: {payload_len} bytes exceeds max {max_payload_len}"
+    )]
+    InvalidCommandPayload {
+        cmd: u8,
+        payload_len: usize,
+        max_payload_len: usize,
+    },
 }
 
 impl From<rusb::Error> for TransportError {
@@ -124,6 +134,19 @@ mod tests {
     fn test_kernel_driver_active_stores_interface() {
         let err = TransportError::KernelDriverActive { interface: 2 };
         assert_eq!(err.to_string(), "kernel driver active on interface 2");
+    }
+
+    #[test]
+    fn test_invalid_command_payload_display() {
+        let err = TransportError::InvalidCommandPayload {
+            cmd: 0x11,
+            payload_len: 80,
+            max_payload_len: 63,
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid command payload for 0x11: 80 bytes exceeds max 63"
+        );
     }
 
     #[test]

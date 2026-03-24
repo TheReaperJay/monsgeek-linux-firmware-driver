@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use monsgeek_protocol::{DeviceDefinition, DeviceRegistry};
 use rusb::UsbContext;
 
+use crate::controller::CommandController;
 use crate::error::TransportError;
 use crate::usb::UsbSession;
 
@@ -39,64 +40,13 @@ pub(crate) struct UsbCandidate {
     pub address: u8,
 }
 
-/// Enumerate connected USB devices and match them against the device registry.
+/// Enumerate connected USB devices and resolve them by firmware device ID.
 ///
-/// Iterates all USB devices via `rusb::devices()`, checks each device's VID/PID
-/// against the registry, and returns a `DeviceInfo` for every match. A single
-/// physical device may produce multiple entries if the registry maps its VID/PID
-/// to multiple device IDs.
-///
-/// # Errors
-///
-/// Returns `TransportError::Usb` if `rusb::devices()` fails (e.g., no USB access).
+/// This API is retained for compatibility, but identity resolution is delegated
+/// to [`probe_devices`] so callers always use `GET_USB_VERSION` instead of PID
+/// heuristics.
 pub fn enumerate_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, TransportError> {
-    if registry.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let devices = rusb::devices()?;
-    let mut found = Vec::new();
-
-    for device in devices.iter() {
-        let descriptor = match device.device_descriptor() {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        let vid = descriptor.vendor_id();
-        let pid = descriptor.product_id();
-
-        let matched = registry.find_by_vid_pid(vid, pid);
-        if matched.is_empty() {
-            continue;
-        }
-
-        let bus = device.bus_number();
-        let address = device.address();
-
-        for definition in matched {
-            log::info!(
-                "Found {} at bus {} addr {} (VID:0x{:04X} PID:0x{:04X})",
-                definition.display_name,
-                bus,
-                address,
-                vid,
-                pid,
-            );
-
-            found.push(DeviceInfo {
-                vid,
-                pid,
-                device_id: definition.id,
-                display_name: definition.display_name.clone(),
-                name: definition.name.clone(),
-                bus,
-                address,
-            });
-        }
-    }
-
-    Ok(found)
+    probe_devices(registry)
 }
 
 /// Probe connected USB devices and identify them by firmware device ID.
@@ -131,7 +81,7 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
                 }
             };
 
-            let usb_version = match session.query_usb_version() {
+            let usb_version = match CommandController::new(session).query_usb_version() {
                 Ok(info) => info,
                 Err(err) => {
                     log::debug!(
@@ -163,6 +113,69 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
     Ok(found)
 }
 
+/// Probe a single runtime USB location and resolve it by firmware device ID.
+///
+/// This is used by hot-plug handling where bus/address is already known from udev.
+/// The function opens only the target device, queries `GET_USB_VERSION`, and maps
+/// the returned firmware ID to the registry.
+///
+/// Returns `Ok(None)` when:
+/// - registry is empty
+/// - no device exists at the given bus/address
+/// - device VID/PID is not present in the registry
+/// - firmware ID is unknown to the registry
+pub fn probe_device_at(
+    registry: &DeviceRegistry,
+    bus: u8,
+    address: u8,
+) -> Result<Option<DeviceInfo>, TransportError> {
+    if registry.is_empty() {
+        return Ok(None);
+    }
+
+    let context = rusb::Context::new()?;
+    let devices = context.devices()?;
+    let Some(device) = devices
+        .iter()
+        .find(|device| device.bus_number() == bus && device.address() == address)
+    else {
+        return Ok(None);
+    };
+
+    let descriptor = match device.device_descriptor() {
+        Ok(descriptor) => descriptor,
+        Err(_) => return Ok(None),
+    };
+    let candidate = UsbCandidate {
+        vid: descriptor.vendor_id(),
+        pid: descriptor.product_id(),
+        bus,
+        address,
+    };
+
+    // Avoid probing completely unknown VID/PID pairs.
+    if registry
+        .find_by_vid_pid(candidate.vid, candidate.pid)
+        .is_empty()
+    {
+        return Ok(None);
+    }
+
+    let session = UsbSession::open_at(candidate.bus, candidate.address)?;
+    let usb_version = CommandController::new(session).query_usb_version()?;
+    let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
+        log::debug!(
+            "Probe bus {} addr {} reported unknown device ID {}",
+            candidate.bus,
+            candidate.address,
+            usb_version.device_id
+        );
+        return Ok(None);
+    };
+
+    Ok(Some(device_info_from_definition(definition, candidate)))
+}
+
 pub(crate) fn probe_device(device: &DeviceDefinition) -> Result<DeviceInfo, TransportError> {
     let mut last_error = None;
     let mut saw_candidate = false;
@@ -187,7 +200,7 @@ pub(crate) fn probe_device(device: &DeviceDefinition) -> Result<DeviceInfo, Tran
             }
         };
 
-        let usb_version = match session.query_usb_version() {
+        let usb_version = match CommandController::new(session).query_usb_version() {
             Ok(info) => info,
             Err(err) => {
                 log::debug!(
@@ -341,6 +354,15 @@ mod tests {
         let _fn_ptr: fn(
             &monsgeek_protocol::DeviceRegistry,
         ) -> Result<Vec<DeviceInfo>, crate::error::TransportError> = probe_devices;
+    }
+
+    #[test]
+    fn test_probe_device_at_exists_with_correct_signature() {
+        let _fn_ptr: fn(
+            &monsgeek_protocol::DeviceRegistry,
+            u8,
+            u8,
+        ) -> Result<Option<DeviceInfo>, crate::error::TransportError> = probe_device_at;
     }
 
     #[test]

@@ -7,11 +7,10 @@
 
 use std::time::Duration;
 
-use monsgeek_protocol::{ChecksumType, cmd};
+use monsgeek_protocol::cmd;
 use rusb::UsbContext;
 
 use crate::error::TransportError;
-use crate::flow_control;
 
 /// HID SET_REPORT request code (USB HID spec section 7.2.2).
 const HID_SET_REPORT: u8 = 0x09;
@@ -67,6 +66,7 @@ pub struct UsbSession {
     handle: rusb::DeviceHandle<rusb::Context>,
     ep_in: Option<u8>,
     detached_if0: bool,
+    detached_if2: bool,
     mode: SessionMode,
 }
 
@@ -117,46 +117,52 @@ impl UsbSession {
 
     /// Open a MonsGeek keyboard by VID/PID with an explicit ownership mode.
     ///
-    /// The yc3121 firmware STALLs when usbhid probes IF1/IF2 HID descriptors
-    /// during initial USB enumeration. This leaves the control pipe in an error
-    /// state (LIBUSB_ERROR_PIPE). A USB reset clears the firmware STALL.
-    ///
-    /// With `HID_QUIRK_IGNORE` active, usbhid never binds, so no STALL occurs.
-    /// The reset is kept unconditionally as it is harmless when not needed.
-    ///
-    /// Sequence:
-    /// 1. Find device by VID/PID
-    /// 2. Open, reset, drop handle (clears STALL if present)
-    /// 3. Wait for re-enumeration
-    /// 4. Re-find device (address may change after reset)
-    /// 5. Re-open, detach kernel drivers from the interfaces required by `mode`
-    /// 6. Claim the interfaces required by `mode`
-    /// 7. If `mode` owns IF0, discover IF0's interrupt IN endpoint
-    /// 8. If `mode` owns IF0, send SET_PROTOCOL(Boot) to IF0
+    /// Opens without USB reset to preserve the kernel's usbhid binding on IF0
+    /// (keyboard input). Detaches the kernel driver only from the interfaces
+    /// required by `mode` and claims them. If the control pipe is in a STALL
+    /// state from kernel descriptor probing, callers should use
+    /// [`reset_and_reopen`] to recover.
     ///
     /// # Errors
     ///
     /// Returns `TransportError::DeviceNotFound` if no matching device is found.
     /// Returns `TransportError::Usb` for any rusb failure during open/claim.
     pub fn open_with_mode(vid: u16, pid: u16, mode: SessionMode) -> Result<Self, TransportError> {
-        Self::open_impl(vid, pid, mode, true)
+        Self::open_impl(vid, pid, mode, None)
     }
 
     fn open_impl(
         vid: u16,
         pid: u16,
         mode: SessionMode,
-        do_reset: bool,
+        preferred_location: Option<(u8, u8)>,
     ) -> Result<Self, TransportError> {
         let context = rusb::Context::new()?;
-        let device = context
-            .devices()?
-            .iter()
-            .find(|d| {
-                d.device_descriptor()
-                    .map(|desc| desc.vendor_id() == vid && desc.product_id() == pid)
-                    .unwrap_or(false)
-            })
+        let devices = context.devices()?;
+        let mut preferred = None;
+        let mut fallback = None;
+        for device in devices.iter() {
+            let descriptor = match device.device_descriptor() {
+                Ok(desc) => desc,
+                Err(_) => continue,
+            };
+            if descriptor.vendor_id() != vid || descriptor.product_id() != pid {
+                continue;
+            }
+
+            if let Some((bus, address)) = preferred_location {
+                if device.bus_number() == bus && device.address() == address {
+                    preferred = Some(device);
+                    break;
+                }
+            }
+
+            if fallback.is_none() {
+                fallback = Some(device);
+            }
+        }
+        let device = preferred
+            .or(fallback)
             .ok_or(TransportError::DeviceNotFound { vid, pid })?;
 
         log::info!(
@@ -166,28 +172,6 @@ impl UsbSession {
             device.bus_number(),
             device.address()
         );
-
-        // Reset the device to clear firmware STALL from usbhid's IF1/IF2
-        // descriptor probing. Open a temporary handle, reset, drop it, wait
-        // for re-enumeration, then re-find and re-open cleanly.
-        if do_reset {
-            let handle = device.open()?;
-            match handle.reset() {
-                Ok(()) => {
-                    log::info!(
-                        "USB: reset OK, waiting {}ms for re-enumeration",
-                        RESET_SETTLE_MS
-                    );
-                    drop(handle);
-                    std::thread::sleep(Duration::from_millis(RESET_SETTLE_MS));
-                    return Self::open_impl(vid, pid, mode, false);
-                }
-                Err(e) => {
-                    log::warn!("USB: reset failed: {} (continuing without reset)", e);
-                    drop(handle);
-                }
-            }
-        }
 
         let handle = device.open()?;
 
@@ -218,6 +202,7 @@ impl UsbSession {
         // With HID_QUIRK_IGNORE, no kernel drivers will be active, but
         // the detach logic remains as a fallback for systems without the quirk.
         let mut detached_if0 = false;
+        let mut detached_if2 = false;
         let interfaces: &[u8] = if claims_input {
             &[IF0, IF1, IF2]
         } else {
@@ -230,6 +215,9 @@ impl UsbSession {
                     handle.detach_kernel_driver(iface)?;
                     if iface == IF0 {
                         detached_if0 = true;
+                    }
+                    if iface == IF2 {
+                        detached_if2 = true;
                     }
                     log::debug!("USB: detached kernel driver from IF{}", iface);
                 }
@@ -272,6 +260,7 @@ impl UsbSession {
             handle,
             ep_in,
             detached_if0,
+            detached_if2,
             mode,
         })
     }
@@ -283,8 +272,8 @@ impl UsbSession {
 
     /// Open a specific device by bus/address with an explicit ownership mode.
     ///
-    /// Used for hot-plug reconnection. Delegates to `open()` by VID/PID after
-    /// looking up the device descriptor, so the reset-then-reopen sequence applies.
+    /// Used for hot-plug reconnection and runtime path pinning. Preserves the
+    /// reset-then-reopen sequence while preferring the requested bus/address.
     ///
     /// # Errors
     ///
@@ -311,7 +300,58 @@ impl UsbSession {
             desc.product_id()
         );
 
-        Self::open_with_mode(desc.vendor_id(), desc.product_id(), mode)
+        Self::open_impl(
+            desc.vendor_id(),
+            desc.product_id(),
+            mode,
+            Some((bus, address)),
+        )
+    }
+
+    /// Reset the USB device and re-open a fresh session.
+    ///
+    /// Used for STALL recovery: if the first command after open fails with
+    /// PIPE (firmware STALL from kernel's IF1/IF2 descriptor probing), this
+    /// clears the STALL via USB reset, waits for re-enumeration, and opens
+    /// a new session. The old session is consumed.
+    ///
+    /// The reset causes the kernel to re-probe, which may trigger another
+    /// IF1/IF2 STALL. Our new session detaches usbhid from IF2 before that
+    /// blocks us.
+    pub fn reset_and_reopen(self) -> Result<Self, TransportError> {
+        let vid = self
+            .handle
+            .device()
+            .device_descriptor()
+            .map(|d| d.vendor_id())
+            .map_err(|e| TransportError::Usb(format!("failed to read descriptor: {}", e)))?;
+        let pid = self
+            .handle
+            .device()
+            .device_descriptor()
+            .map(|d| d.product_id())
+            .map_err(|e| TransportError::Usb(format!("failed to read descriptor: {}", e)))?;
+        let mode = self.mode;
+
+        log::info!("USB: resetting device for STALL recovery");
+        let reset_result = self.handle.reset();
+        drop(self);
+
+        match reset_result {
+            Ok(()) => {
+                log::info!(
+                    "USB: reset OK, waiting {}ms for re-enumeration",
+                    RESET_SETTLE_MS
+                );
+                std::thread::sleep(Duration::from_millis(RESET_SETTLE_MS));
+            }
+            Err(e) => {
+                log::warn!("USB: reset failed: {} (attempting reopen anyway)", e);
+                std::thread::sleep(Duration::from_millis(RESET_SETTLE_MS));
+            }
+        }
+
+        Self::open_with_mode(vid, pid, mode)
     }
 
     /// Send a 64-byte HID feature report to IF2 via SET_REPORT control transfer.
@@ -326,7 +366,7 @@ impl UsbSession {
     ///
     /// Panics if `data.len() != 64`. This is a programming error -- the caller must
     /// always provide exactly 64 bytes.
-    pub fn vendor_set_report(&self, data: &[u8]) -> Result<(), TransportError> {
+    pub(crate) fn vendor_set_report(&self, data: &[u8]) -> Result<(), TransportError> {
         assert_eq!(
             data.len(),
             64,
@@ -356,7 +396,7 @@ impl UsbSession {
     ///
     /// The flow_control layer depends on this signature:
     /// `let response = session.vendor_get_report()?;`
-    pub fn vendor_get_report(&self) -> Result<[u8; 64], TransportError> {
+    pub(crate) fn vendor_get_report(&self) -> Result<[u8; 64], TransportError> {
         let mut buf = [0u8; 64];
         self.handle
             .read_control(
@@ -369,13 +409,6 @@ impl UsbSession {
             )
             .map_err(TransportError::from)?;
         Ok(buf)
-    }
-
-    /// Query `GET_USB_VERSION` (0x8F) and parse the 32-bit device ID.
-    pub fn query_usb_version(&self) -> Result<UsbVersionInfo, TransportError> {
-        let response =
-            flow_control::query_command(self, cmd::GET_USB_VERSION, &[], ChecksumType::Bit7)?;
-        UsbVersionInfo::parse(&response)
     }
 
     /// Read an 8-byte boot keyboard HID report from IF0's interrupt endpoint.
@@ -439,6 +472,12 @@ impl Drop for UsbSession {
             match self.handle.attach_kernel_driver(IF0) {
                 Ok(()) => log::debug!("USB: reattached kernel driver to IF0"),
                 Err(e) => log::warn!("USB: failed to reattach kernel driver to IF0: {}", e),
+            }
+        }
+        if self.detached_if2 {
+            match self.handle.attach_kernel_driver(IF2) {
+                Ok(()) => log::debug!("USB: reattached kernel driver to IF2"),
+                Err(e) => log::warn!("USB: failed to reattach kernel driver to IF2: {}", e),
             }
         }
         log::debug!("USB: released all interfaces");

@@ -1,0 +1,22 @@
+{
+  "id": 2352,
+  "vid": 12625,
+  "pid": 20521,
+  "name": "ry5088_fun60ultra_8k_dm_dfn4",
+  "displayName": "FUN60 Ultra",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 61,
+  "keyLayoutName": "Common61_gk06",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hotSwap": true
+}

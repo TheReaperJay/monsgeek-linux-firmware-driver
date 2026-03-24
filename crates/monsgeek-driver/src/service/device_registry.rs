@@ -6,6 +6,8 @@ pub struct DeviceRegistration {
     pub device_id: i32,
     pub vid: u16,
     pub pid: u16,
+    pub bus: u8,
+    pub address: u8,
 }
 
 #[derive(Debug, Default)]
@@ -57,6 +59,8 @@ impl DevicePathRegistry {
             device_id,
             vid,
             pid,
+            bus,
+            address,
         };
         self.by_bus_address.insert((bus, address), path.clone());
         self.by_path.insert(path, registration.clone());

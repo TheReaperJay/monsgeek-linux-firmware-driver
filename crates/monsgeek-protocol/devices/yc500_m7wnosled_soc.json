@@ -1,0 +1,21 @@
+{
+  "id": 1215,
+  "vid": 12625,
+  "pid": 16405,
+  "name": "yc500_m7wnosled_soc",
+  "displayName": "M7W",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 68,
+  "keyLayoutName": "Common68_MK902_2",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "noMagneticSwitch": true,
+  "hasLightLayout": true
+}

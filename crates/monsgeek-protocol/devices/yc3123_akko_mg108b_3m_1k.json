@@ -1,0 +1,21 @@
+{
+  "id": 3245,
+  "vid": 12625,
+  "pid": 20482,
+  "name": "yc3123_akko_mg108b_3m_1k",
+  "displayName": "MG108B",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 108,
+  "keyLayoutName": "Common108_MG108B",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "noMagneticSwitch": true,
+  "hasLightLayout": true
+}

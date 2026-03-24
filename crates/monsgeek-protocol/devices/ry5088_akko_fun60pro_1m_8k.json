@@ -1,0 +1,22 @@
+{
+  "id": 2304,
+  "vid": 12625,
+  "pid": 20525,
+  "name": "ry5088_akko_fun60pro_1m_8k",
+  "displayName": "FUN60 PRO",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 61,
+  "keyLayoutName": "Common61_gk06",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hotSwap": true
+}

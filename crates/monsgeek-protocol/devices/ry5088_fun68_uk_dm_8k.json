@@ -1,0 +1,22 @@
+{
+  "id": 3429,
+  "vid": 14574,
+  "pid": 9,
+  "name": "ry5088_fun68_uk_dm_8k",
+  "displayName": "FUN68 ISO",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 68,
+  "keyLayoutName": "Common68_fun68_uk",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hotSwap": true
+}

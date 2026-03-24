@@ -12,6 +12,9 @@ crossbeam-channel = "0.5"
 udev = "0.9.3"
 libc = "0.2.183"
 
+[dev-dependencies]
+simple_logger = "5"
+
 [features]
 hardware = []
 dangerous-hardware-writes = []

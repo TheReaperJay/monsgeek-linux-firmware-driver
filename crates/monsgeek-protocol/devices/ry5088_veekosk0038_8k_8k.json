@@ -1,0 +1,23 @@
+{
+  "id": 2721,
+  "vid": 12625,
+  "pid": 20528,
+  "name": "ry5088_veekosk0038_8k_8k",
+  "displayName": "FAN",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 68,
+  "keyLayoutName": "Common68_K80X68",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hasSideLight": true,
+  "hotSwap": true
+}

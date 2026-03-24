@@ -1,0 +1,21 @@
+{
+  "id": 1604,
+  "vid": 12625,
+  "pid": 16437,
+  "name": "yc3121_m1whes_hall_8k",
+  "displayName": "M1W HE",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 82,
+  "keyLayoutName": "Common82_SG9000",
+  "layer": 5,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true
+}

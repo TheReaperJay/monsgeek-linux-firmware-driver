@@ -248,10 +248,15 @@ mod tests {
         assert_eq!(device.hot_swap, Some(false));
         assert_eq!(device.chip_family, Some("YC3121".to_string()));
         let commands = device.commands();
-        assert_eq!(commands.set_debounce, 0x06);
-        assert_eq!(commands.get_debounce, 0x86);
-        assert_eq!(commands.set_report, Some(0x03));
-        assert_eq!(commands.get_report, Some(0x83));
+        assert_eq!(commands.set_debounce, 0x11);
+        assert_eq!(commands.get_debounce, 0x91);
+        assert_eq!(commands.set_macro, 0x0B);
+        assert_eq!(commands.set_kboption, Some(0x06));
+        assert_eq!(commands.get_kboption, Some(0x86));
+        assert_eq!(commands.set_sleeptime, Some(0x12));
+        assert_eq!(commands.get_sleeptime, Some(0x92));
+        assert_eq!(commands.set_report, None);
+        assert_eq!(commands.get_report, None);
     }
 
     #[test]
@@ -339,18 +344,26 @@ mod tests {
             "name": "yc3121_m5w_soc",
             "displayName": "M5W",
             "commandOverrides": {
-                "setDebounce": 6,
-                "getDebounce": 134,
-                "setReport": 3,
-                "getReport": 131
+                "setDebounce": 17,
+                "getDebounce": 145,
+                "setMacro": 11,
+                "setKboption": 6,
+                "getKboption": 134,
+                "setSleeptime": 18,
+                "getSleeptime": 146
             }
         }"#;
         let device: DeviceDefinition = serde_json::from_str(json).unwrap();
         let commands = device.commands();
         assert_eq!(device.protocol_family(), ProtocolFamily::YiChip);
-        assert_eq!(commands.set_debounce, 0x06);
-        assert_eq!(commands.get_debounce, 0x86);
-        assert_eq!(commands.set_report, Some(0x03));
-        assert_eq!(commands.get_report, Some(0x83));
+        assert_eq!(commands.set_debounce, 0x11);
+        assert_eq!(commands.get_debounce, 0x91);
+        assert_eq!(commands.set_macro, 0x0B);
+        assert_eq!(commands.set_kboption, Some(0x06));
+        assert_eq!(commands.get_kboption, Some(0x86));
+        assert_eq!(commands.set_sleeptime, Some(0x12));
+        assert_eq!(commands.get_sleeptime, Some(0x92));
+        assert_eq!(commands.set_report, None);
+        assert_eq!(commands.get_report, None);
     }
 }

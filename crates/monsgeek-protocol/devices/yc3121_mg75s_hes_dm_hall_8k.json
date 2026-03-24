@@ -1,0 +1,21 @@
+{
+  "id": 1674,
+  "vid": 12625,
+  "pid": 16437,
+  "name": "yc3121_mg75s_hes_dm_hall_8k",
+  "displayName": "MG75S HE",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 83,
+  "keyLayoutName": "Common83_MG75S",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "magnetism": true,
+  "hasLightLayout": true
+}

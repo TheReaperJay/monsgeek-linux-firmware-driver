@@ -1,0 +1,23 @@
+{
+  "id": 3269,
+  "vid": 14574,
+  "pid": 1,
+  "name": "ry5088_akko_veekosshine68_3m_8k",
+  "displayName": "Shine68",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 68,
+  "keyLayoutName": "Common68_K80X68",
+  "layer": 2,
+  "fnSysLayer": {
+    "win": 1,
+    "mac": 1
+  },
+  "magnetism": true,
+  "hasLightLayout": true,
+  "hasSideLight": true,
+  "hotSwap": true
+}

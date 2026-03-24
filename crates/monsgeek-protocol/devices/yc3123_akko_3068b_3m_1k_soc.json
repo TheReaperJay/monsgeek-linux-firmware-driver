@@ -1,0 +1,21 @@
+{
+  "id": 3147,
+  "vid": 12625,
+  "pid": 20482,
+  "name": "yc3123_akko_3068b_3m_1k_soc",
+  "displayName": "FUN68",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 68,
+  "keyLayoutName": "Common68_FUN68",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "noMagneticSwitch": true,
+  "hasLightLayout": true
+}

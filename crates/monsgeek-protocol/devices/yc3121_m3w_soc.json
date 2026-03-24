@@ -1,0 +1,21 @@
+{
+  "id": 1200,
+  "vid": 12625,
+  "pid": 16405,
+  "name": "yc3121_m3w_soc",
+  "displayName": "M3W",
+  "company": "MonsGeek",
+  "type": "keyboard",
+  "sources": [
+    "electron_win_500.2.13"
+  ],
+  "keyCount": 87,
+  "keyLayoutName": "Common87_MonsGeek_M3V5",
+  "layer": 4,
+  "fnSysLayer": {
+    "win": 2,
+    "mac": 2
+  },
+  "noMagneticSwitch": true,
+  "hasLightLayout": true
+}
