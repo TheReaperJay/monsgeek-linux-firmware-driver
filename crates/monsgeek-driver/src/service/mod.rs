@@ -69,6 +69,33 @@ impl DriverService {
         }
     }
 
+    /// Gracefully stop all active transport sessions and clear runtime state.
+    ///
+    /// This is used by process shutdown handling so transport/background threads
+    /// can observe channel closure and exit naturally.
+    pub fn shutdown(&self) {
+        let drained: Vec<ConnectedDevice> = self
+            .devices
+            .lock()
+            .expect("devices map poisoned")
+            .drain()
+            .map(|(_, connected)| connected)
+            .collect();
+
+        for connected in drained {
+            connected.handle.shutdown();
+        }
+
+        self.path_registry
+            .lock()
+            .expect("path registry poisoned")
+            .clear();
+        self.opening_paths
+            .lock()
+            .expect("opening set poisoned")
+            .clear();
+    }
+
     fn connect_registration(&self, registration: DeviceRegistration, emit_add: bool) {
         let Some(definition) = self.registry.find_by_id(registration.device_id).cloned() else {
             tracing::warn!(
@@ -156,13 +183,36 @@ impl DriverService {
 
     /// Discovery path used by `watchDevList`.
     ///
-    /// Device identity is resolved via firmware query (`GET_USB_VERSION`),
-    /// not by USB PID heuristics.
+    /// Returns already-connected devices first (from live transport sessions),
+    /// then probes USB for any new devices not yet connected. This avoids
+    /// re-probing devices whose IF2 is already claimed by a running transport,
+    /// which would fail and hide the device from subsequent subscribers.
     async fn scan_devices(&self) -> Vec<DjDev> {
-        self.scan_registrations()
-            .into_iter()
-            .map(registration_to_djdev)
-            .collect()
+        // Start with devices that already have a running transport.
+        let mut result: Vec<DjDev> = {
+            let devices = self.devices.lock().expect("devices map poisoned");
+            devices
+                .values()
+                .map(|connected| device_to_djdev(connected, true))
+                .collect()
+        };
+
+        let connected_ids: std::collections::HashSet<i32> = {
+            let devices = self.devices.lock().expect("devices map poisoned");
+            devices
+                .values()
+                .map(|connected| connected.registration.device_id)
+                .collect()
+        };
+
+        // Probe USB for devices not yet connected.
+        for registration in self.scan_registrations() {
+            if !connected_ids.contains(&registration.device_id) {
+                result.push(registration_to_djdev(registration));
+            }
+        }
+
+        result
     }
 
     fn spawn_transport_event_loop(
@@ -853,6 +903,47 @@ mod tests {
     #[test]
     fn get_version_signature_exists() {
         let _ = <DriverService as DriverGrpc>::get_version;
+    }
+
+    #[test]
+    fn shutdown_clears_runtime_state() {
+        let service = DriverService::new();
+        {
+            let mut path_registry = service
+                .path_registry
+                .lock()
+                .expect("path registry poisoned");
+            path_registry.register(0x3151, 0x4015, 1308, 3, 15);
+        }
+        {
+            let mut opening = service.opening_paths.lock().expect("opening set poisoned");
+            opening.insert("stale-path".to_string());
+        }
+
+        service.shutdown();
+
+        assert!(
+            service
+                .devices
+                .lock()
+                .expect("devices map poisoned")
+                .is_empty()
+        );
+        assert!(
+            service
+                .path_registry
+                .lock()
+                .expect("path registry poisoned")
+                .get_by_bus_address(3, 15)
+                .is_none()
+        );
+        assert!(
+            service
+                .opening_paths
+                .lock()
+                .expect("opening set poisoned")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

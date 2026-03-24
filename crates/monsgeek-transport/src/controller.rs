@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use monsgeek_protocol::{ChecksumType, DeviceDefinition, ProtocolFamily, cmd, hid, timing};
+use monsgeek_protocol::{
+    ChecksumType, CommandResolution, CommandSchemaMap, MAX_PAYLOAD_SIZE, PayloadSchema, cmd, timing,
+};
 
 use crate::error::TransportError;
 use crate::flow_control;
@@ -9,47 +11,36 @@ use crate::usb::{UsbSession, UsbVersionInfo};
 /// Single authority for issuing HID command traffic to the keyboard.
 ///
 /// This controller centralizes:
-/// - command payload sanitization
+/// - device-aware command payload normalization and validation
 /// - mandatory inter-command spacing
 /// - retry/query behavior via flow_control
 ///
 /// All runtime command paths must pass through this type.
 pub(crate) struct CommandController {
     session: UsbSession,
-    policy: CommandPolicy,
+    schema_map: CommandSchemaMap,
     last_command_at: Instant,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct CommandPolicy {
-    /// YiChip debounce SET payload requires [profile, value] with profile=0.
-    /// We normalize legacy single-byte callers to this wire shape.
-    yi_chip_set_debounce_cmd: Option<u8>,
-}
-
-impl CommandPolicy {
-    pub(crate) fn for_device(device: &DeviceDefinition) -> Self {
-        let commands = device.commands();
-        if device.protocol_family() == ProtocolFamily::YiChip {
-            Self {
-                yi_chip_set_debounce_cmd: Some(commands.set_debounce),
-            }
-        } else {
-            Self::default()
-        }
-    }
-}
-
 impl CommandController {
+    /// Create a controller for pre-identity probe sessions.
+    ///
+    /// Uses a minimal schema that only recognizes `GET_USB_VERSION` and `GET_REV`.
+    /// Used by `open_matching_session` and `recover` before the device definition
+    /// is known.
     pub(crate) fn new(session: UsbSession) -> Self {
-        Self::with_policy(session, CommandPolicy::default())
-    }
-
-    pub(crate) fn with_policy(session: UsbSession, policy: CommandPolicy) -> Self {
         Self {
             session,
-            policy,
-            // First command should execute immediately.
+            schema_map: CommandSchemaMap::probe_only(),
+            last_command_at: Instant::now() - Duration::from_millis(timing::DEFAULT_DELAY_MS * 2),
+        }
+    }
+
+    /// Create a controller with an explicit schema map.
+    pub(crate) fn with_schema(session: UsbSession, schema_map: CommandSchemaMap) -> Self {
+        Self {
+            session,
+            schema_map,
             last_command_at: Instant::now() - Duration::from_millis(timing::DEFAULT_DELAY_MS * 2),
         }
     }
@@ -68,10 +59,9 @@ impl CommandController {
         data: &[u8],
         checksum: ChecksumType,
     ) -> Result<(), TransportError> {
-        let sanitized = sanitize_send_payload(cmd, data, self.policy);
-        validate_payload(cmd, &sanitized)?;
+        let wire_data = self.normalize_and_validate(cmd, data)?;
         self.enforce_inter_command_delay();
-        let result = flow_control::send_command(&self.session, cmd, &sanitized, checksum);
+        let result = flow_control::send_command(&self.session, cmd, &wire_data, checksum);
         self.last_command_at = Instant::now();
         result
     }
@@ -82,9 +72,9 @@ impl CommandController {
         data: &[u8],
         checksum: ChecksumType,
     ) -> Result<[u8; 64], TransportError> {
-        validate_payload(cmd, data)?;
+        let wire_data = self.normalize_and_validate(cmd, data)?;
         self.enforce_inter_command_delay();
-        let result = flow_control::query_command(&self.session, cmd, data, checksum);
+        let result = flow_control::query_command(&self.session, cmd, &wire_data, checksum);
         self.last_command_at = Instant::now();
         result
     }
@@ -101,6 +91,31 @@ impl CommandController {
         UsbVersionInfo::parse(&response)
     }
 
+    /// Normalize and validate a command payload against the device's schema.
+    ///
+    /// For known/shared commands: applies schema-specific normalization and
+    /// strict validation. For unknown commands: applies size-only validation
+    /// with a warning (or rejects in strict mode).
+    fn normalize_and_validate(&self, cmd: u8, data: &[u8]) -> Result<Vec<u8>, TransportError> {
+        match self.schema_map.resolve(cmd) {
+            CommandResolution::Known(schema) | CommandResolution::Shared(schema) => {
+                apply_schema(cmd, data, schema)
+            }
+            CommandResolution::Unknown => {
+                if self.schema_map.is_strict() {
+                    return Err(TransportError::UnknownCommand { cmd });
+                }
+                log::warn!(
+                    "Unknown command 0x{:02X} for {} device — passing through with size validation only",
+                    cmd,
+                    self.schema_map.protocol_family()
+                );
+                validate_size(cmd, data)?;
+                Ok(data.to_vec())
+            }
+        }
+    }
+
     fn enforce_inter_command_delay(&self) {
         let elapsed = self.last_command_at.elapsed();
         let required = Duration::from_millis(timing::DEFAULT_DELAY_MS);
@@ -110,84 +125,221 @@ impl CommandController {
     }
 }
 
-fn validate_payload(cmd: u8, data: &[u8]) -> Result<(), TransportError> {
-    let max_payload_len = hid::REPORT_SIZE.saturating_sub(2);
-    if data.len() > max_payload_len {
+/// Apply a payload schema: normalize the data and validate the result.
+fn apply_schema(cmd: u8, data: &[u8], schema: &PayloadSchema) -> Result<Vec<u8>, TransportError> {
+    match schema {
+        PayloadSchema::Empty => {
+            if !data.is_empty() {
+                return Err(TransportError::InvalidCommandPayload {
+                    cmd,
+                    payload_len: data.len(),
+                    max_payload_len: 0,
+                });
+            }
+            Ok(Vec::new())
+        }
+        PayloadSchema::FixedSize(expected) => {
+            if data.len() != *expected {
+                return Err(TransportError::InvalidCommandPayload {
+                    cmd,
+                    payload_len: data.len(),
+                    max_payload_len: *expected,
+                });
+            }
+            Ok(data.to_vec())
+        }
+        PayloadSchema::Range { min, max } => {
+            if data.len() < *min || data.len() > *max {
+                return Err(TransportError::InvalidCommandPayload {
+                    cmd,
+                    payload_len: data.len(),
+                    max_payload_len: *max,
+                });
+            }
+            Ok(data.to_vec())
+        }
+        PayloadSchema::Normalized {
+            wire_size,
+            normalizer,
+        } => {
+            let normalized = normalizer.normalize(data);
+            if normalized.len() != *wire_size {
+                return Err(TransportError::InvalidCommandPayload {
+                    cmd,
+                    payload_len: normalized.len(),
+                    max_payload_len: *wire_size,
+                });
+            }
+            Ok(normalized)
+        }
+        PayloadSchema::VariableWithMax(max) => {
+            let effective_max = (*max).min(MAX_PAYLOAD_SIZE);
+            if data.len() > effective_max {
+                return Err(TransportError::InvalidCommandPayload {
+                    cmd,
+                    payload_len: data.len(),
+                    max_payload_len: effective_max,
+                });
+            }
+            Ok(data.to_vec())
+        }
+    }
+}
+
+/// Basic size-only validation for unknown commands (permissive mode fallback).
+fn validate_size(cmd: u8, data: &[u8]) -> Result<(), TransportError> {
+    if data.len() > MAX_PAYLOAD_SIZE {
         return Err(TransportError::InvalidCommandPayload {
             cmd,
             payload_len: data.len(),
-            max_payload_len,
+            max_payload_len: MAX_PAYLOAD_SIZE,
         });
     }
     Ok(())
 }
 
-fn sanitize_send_payload(cmd: u8, data: &[u8], policy: CommandPolicy) -> Vec<u8> {
-    // YiChip debounce SET uses payload shape [0x00, value].
-    // If legacy callers pass only [value], normalize to the correct wire shape.
-    if policy.yi_chip_set_debounce_cmd == Some(cmd) && data.len() == 1 && data[0] <= 50 {
-        vec![0, data[0]]
-    } else {
-        data.to_vec()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{CommandPolicy, sanitize_send_payload, validate_payload};
-    use crate::error::TransportError;
+    use super::*;
+    use monsgeek_protocol::NormalizerFn;
+
+    // ── apply_schema tests ──────────────────────────────────────────────
 
     #[test]
-    fn validate_payload_accepts_max_size() {
-        let data = vec![0u8; 63];
-        validate_payload(0x11, &data).expect("max-size payload should be accepted");
+    fn apply_schema_empty_accepts_empty() {
+        let result = apply_schema(0x01, &[], &PayloadSchema::Empty);
+        assert_eq!(result.unwrap(), Vec::<u8>::new());
     }
 
     #[test]
-    fn validate_payload_rejects_oversize() {
-        let data = vec![0u8; 64];
-        let err = validate_payload(0x11, &data).expect_err("oversize payload must be rejected");
-        match err {
+    fn apply_schema_empty_rejects_data() {
+        let result = apply_schema(0x01, &[0x05], &PayloadSchema::Empty);
+        assert!(result.is_err());
+        match result.unwrap_err() {
             TransportError::InvalidCommandPayload {
                 cmd,
                 payload_len,
                 max_payload_len,
             } => {
-                assert_eq!(cmd, 0x11);
-                assert_eq!(payload_len, 64);
-                assert_eq!(max_payload_len, 63);
+                assert_eq!(cmd, 0x01);
+                assert_eq!(payload_len, 1);
+                assert_eq!(max_payload_len, 0);
             }
-            other => panic!("unexpected error variant: {other:?}"),
+            other => panic!("unexpected error: {:?}", other),
         }
     }
 
     #[test]
-    fn sanitize_yichip_debounce_single_byte() {
-        let out = sanitize_send_payload(
-            0x11,
-            &[5],
-            CommandPolicy {
-                yi_chip_set_debounce_cmd: Some(0x11),
-            },
-        );
-        assert_eq!(out, vec![0, 5]);
+    fn apply_schema_fixed_size_exact() {
+        let result = apply_schema(0x04, &[0x01], &PayloadSchema::FixedSize(1));
+        assert_eq!(result.unwrap(), vec![0x01]);
     }
 
     #[test]
-    fn sanitize_leaves_non_debounce_payload_unchanged() {
-        let policy = CommandPolicy {
-            yi_chip_set_debounce_cmd: Some(0x11),
+    fn apply_schema_fixed_size_wrong() {
+        let result = apply_schema(0x04, &[0x01, 0x02], &PayloadSchema::FixedSize(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_schema_fixed_size_empty_when_expects_one() {
+        let result = apply_schema(0x04, &[], &PayloadSchema::FixedSize(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_schema_normalized_transforms() {
+        let schema = PayloadSchema::Normalized {
+            wire_size: 2,
+            normalizer: NormalizerFn::PrependProfileZero,
         };
-
-        let out = sanitize_send_payload(0x11, &[0, 5], policy);
-        assert_eq!(out, vec![0, 5]);
-        let out2 = sanitize_send_payload(0x06, &[5], policy);
-        assert_eq!(out2, vec![5]);
+        let result = apply_schema(0x11, &[5], &schema);
+        assert_eq!(result.unwrap(), vec![0x00, 5]);
     }
 
     #[test]
-    fn sanitize_does_not_rewrite_without_policy() {
-        let out = sanitize_send_payload(0x11, &[5], CommandPolicy::default());
-        assert_eq!(out, vec![5]);
+    fn apply_schema_normalized_passthrough_correct_size() {
+        let schema = PayloadSchema::Normalized {
+            wire_size: 2,
+            normalizer: NormalizerFn::PrependProfileZero,
+        };
+        let result = apply_schema(0x11, &[0x00, 5], &schema);
+        assert_eq!(result.unwrap(), vec![0x00, 5]);
+    }
+
+    #[test]
+    fn apply_schema_normalized_rejects_wrong_size_after_transform() {
+        let schema = PayloadSchema::Normalized {
+            wire_size: 2,
+            normalizer: NormalizerFn::PrependProfileZero,
+        };
+        // 3 bytes in, normalizer passes through (len != 1), result is 3 bytes, wire_size is 2
+        let result = apply_schema(0x11, &[0x00, 5, 0xFF], &schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_schema_variable_max_within() {
+        let result = apply_schema(0x0A, &[0u8; 60], &PayloadSchema::VariableWithMax(63));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 60);
+    }
+
+    #[test]
+    fn apply_schema_variable_max_at_boundary() {
+        let result = apply_schema(0x0A, &[0u8; 63], &PayloadSchema::VariableWithMax(63));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn apply_schema_variable_max_over() {
+        let result = apply_schema(0x0A, &[0u8; 64], &PayloadSchema::VariableWithMax(63));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_schema_variable_max_empty() {
+        let result = apply_schema(0x0A, &[], &PayloadSchema::VariableWithMax(63));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn apply_schema_range_within() {
+        let schema = PayloadSchema::Range { min: 1, max: 8 };
+        let result = apply_schema(0x09, &[0x01, 0x02, 0x03, 0x04], &schema);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn apply_schema_range_at_min() {
+        let schema = PayloadSchema::Range { min: 1, max: 8 };
+        let result = apply_schema(0x09, &[0x01], &schema);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn apply_schema_range_under() {
+        let schema = PayloadSchema::Range { min: 1, max: 8 };
+        let result = apply_schema(0x09, &[], &schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_schema_range_over() {
+        let schema = PayloadSchema::Range { min: 1, max: 8 };
+        let result = apply_schema(0x09, &[0u8; 9], &schema);
+        assert!(result.is_err());
+    }
+
+    // ── validate_size tests ─────────────────────────────────────────────
+
+    #[test]
+    fn validate_size_accepts_max() {
+        assert!(validate_size(0x11, &[0u8; 63]).is_ok());
+    }
+
+    #[test]
+    fn validate_size_rejects_oversize() {
+        assert!(validate_size(0x11, &[0u8; 64]).is_err());
     }
 }

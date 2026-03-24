@@ -16,6 +16,7 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crossbeam-channel = "0.5"
+libc = "0.2"
 
 [build-dependencies]
 tonic-build = "0.12"

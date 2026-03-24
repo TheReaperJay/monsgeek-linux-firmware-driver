@@ -81,18 +81,39 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
                 }
             };
 
-            let usb_version = match CommandController::new(session).query_usb_version() {
+            let mut controller = CommandController::new(session);
+            let usb_version = match controller.query_usb_version() {
                 Ok(info) => info,
-                Err(err) => {
+                Err(first_err) => {
+                    // STALL recovery: the yc3121 firmware often STALLs on the
+                    // first command after the kernel's IF2 descriptor probing.
+                    // Reset the USB device and retry once before giving up.
                     log::debug!(
-                        "GET_USB_VERSION probe failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                        "Probe: first query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {} — attempting STALL recovery",
                         candidate.bus,
                         candidate.address,
                         candidate.vid,
                         candidate.pid,
-                        err
+                        first_err
                     );
-                    continue;
+                    match controller
+                        .into_session()
+                        .reset_and_reopen()
+                        .and_then(|session| CommandController::new(session).query_usb_version())
+                    {
+                        Ok(info) => info,
+                        Err(retry_err) => {
+                            log::debug!(
+                                "Probe: STALL recovery also failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                                candidate.bus,
+                                candidate.address,
+                                candidate.vid,
+                                candidate.pid,
+                                retry_err
+                            );
+                            continue;
+                        }
+                    }
                 }
             };
 
@@ -162,7 +183,20 @@ pub fn probe_device_at(
     }
 
     let session = UsbSession::open_at(candidate.bus, candidate.address)?;
-    let usb_version = CommandController::new(session).query_usb_version()?;
+    let mut controller = CommandController::new(session);
+    let usb_version = match controller.query_usb_version() {
+        Ok(info) => info,
+        Err(first_err) => {
+            log::debug!(
+                "probe_device_at: first query failed bus {} addr {}: {} — attempting STALL recovery",
+                bus,
+                address,
+                first_err
+            );
+            let session = controller.into_session().reset_and_reopen()?;
+            CommandController::new(session).query_usb_version()?
+        }
+    };
     let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
         log::debug!(
             "Probe bus {} addr {} reported unknown device ID {}",
@@ -200,19 +234,37 @@ pub(crate) fn probe_device(device: &DeviceDefinition) -> Result<DeviceInfo, Tran
             }
         };
 
-        let usb_version = match CommandController::new(session).query_usb_version() {
+        let mut controller = CommandController::new(session);
+        let usb_version = match controller.query_usb_version() {
             Ok(info) => info,
-            Err(err) => {
+            Err(first_err) => {
                 log::debug!(
-                    "Probe query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                    "probe_device: first query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {} — attempting STALL recovery",
                     candidate.bus,
                     candidate.address,
                     candidate.vid,
                     candidate.pid,
-                    err
+                    first_err
                 );
-                last_error = Some(err);
-                continue;
+                match controller
+                    .into_session()
+                    .reset_and_reopen()
+                    .and_then(|session| CommandController::new(session).query_usb_version())
+                {
+                    Ok(info) => info,
+                    Err(retry_err) => {
+                        log::debug!(
+                            "probe_device: STALL recovery also failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                            candidate.bus,
+                            candidate.address,
+                            candidate.vid,
+                            candidate.pid,
+                            retry_err
+                        );
+                        last_error = Some(retry_err);
+                        continue;
+                    }
+                }
             }
         };
 

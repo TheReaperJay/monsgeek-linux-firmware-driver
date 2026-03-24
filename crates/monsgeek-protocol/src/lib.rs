@@ -1,6 +1,7 @@
 pub mod ble;
 pub mod checksum;
 pub mod cmd;
+pub mod command_schema;
 pub mod device;
 pub mod error;
 pub mod hid;
@@ -13,6 +14,9 @@ pub mod timing;
 
 pub use checksum::{
     ChecksumType, apply_checksum, build_ble_command, build_command, calculate_checksum,
+};
+pub use command_schema::{
+    CommandResolution, CommandSchemaMap, MAX_PAYLOAD_SIZE, NormalizerFn, PayloadSchema,
 };
 pub use device::{CommandOverrides, DeviceDefinition};
 pub use error::{ProtocolError, RegistryError};

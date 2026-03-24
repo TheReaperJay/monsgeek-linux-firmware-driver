@@ -38,11 +38,41 @@ pub(crate) fn query_command(
 ) -> Result<[u8; 64], TransportError> {
     let frame = build_command(cmd_byte, data, checksum);
     let mut last_actual: u8 = 0;
+    let mut last_err: Option<TransportError> = None;
 
     for attempt in 0..timing::QUERY_RETRIES {
-        session.vendor_set_report(&frame[1..])?;
+        if let Err(err) = session.vendor_set_report(&frame[1..]) {
+            log::warn!(
+                "Query attempt {} for 0x{:02X} SET_REPORT failed: {}",
+                attempt + 1,
+                cmd_byte,
+                err
+            );
+            last_err = Some(err);
+            if attempt + 1 < timing::QUERY_RETRIES {
+                std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
+                continue;
+            }
+            break;
+        }
         std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
-        let response = session.vendor_get_report()?;
+        let response = match session.vendor_get_report() {
+            Ok(response) => response,
+            Err(err) => {
+                log::warn!(
+                    "Query attempt {} for 0x{:02X} GET_REPORT failed: {}",
+                    attempt + 1,
+                    cmd_byte,
+                    err
+                );
+                last_err = Some(err);
+                if attempt + 1 < timing::QUERY_RETRIES {
+                    std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
+                    continue;
+                }
+                break;
+            }
+        };
 
         if response[0] == cmd_byte {
             return Ok(response);
@@ -55,6 +85,10 @@ pub(crate) fn query_command(
             cmd_byte,
             last_actual
         );
+    }
+
+    if let Some(err) = last_err {
+        return Err(err);
     }
 
     Err(TransportError::EchoMismatch {

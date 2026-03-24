@@ -77,6 +77,11 @@ impl DevicePathRegistry {
         self.by_path.remove(&path)
     }
 
+    pub fn clear(&mut self) {
+        self.by_path.clear();
+        self.by_bus_address.clear();
+    }
+
     pub fn parse_vid_pid(path: &str) -> Option<(u16, u16)> {
         let mut parts = path.split('-');
         let vid = u16::from_str_radix(parts.next()?, 16).ok()?;
@@ -102,5 +107,14 @@ mod tests {
         let path = DevicePathRegistry::new().make_path(0x3151, 0x4015, 1308, 3, 11);
         let parsed = DevicePathRegistry::parse_vid_pid(&path).unwrap();
         assert_eq!(parsed, (0x3151, 0x4015));
+    }
+
+    #[test]
+    fn clear_removes_all_registered_entries() {
+        let mut registry = DevicePathRegistry::new();
+        registry.register(0x3151, 0x4015, 1308, 3, 11);
+        assert!(registry.get_by_bus_address(3, 11).is_some());
+        registry.clear();
+        assert!(registry.get_by_bus_address(3, 11).is_none());
     }
 }
