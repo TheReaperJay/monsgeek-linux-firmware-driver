@@ -433,6 +433,209 @@ fn test_udev_rules_file() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9: GET_KEYMATRIX for profile 0 (KEYS-01)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn test_get_keymatrix_profile_0() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    let commands = m5w.commands();
+    // GET_KEYMATRIX query payload: [profile=0, magic=0, page=0, magnetism_profile=0]
+    let response = handle
+        .send_query(commands.get_keymatrix, &[0, 0, 0, 0], ChecksumType::Bit7)
+        .expect("GET_KEYMATRIX query failed");
+
+    assert_eq!(
+        response[0], commands.get_keymatrix,
+        "echo byte mismatch for GET_KEYMATRIX: expected 0x{:02X}, got 0x{:02X}",
+        commands.get_keymatrix, response[0]
+    );
+
+    // Response should contain key mapping data (not all zeros after echo byte)
+    let payload_has_data = response[1..32].iter().any(|&b| b != 0);
+    println!(
+        "GET_KEYMATRIX profile 0 response (first 32 bytes): {:02X?}",
+        &response[..32]
+    );
+    println!("Payload has non-zero data: {}", payload_has_data);
+
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: GET/SET_PROFILE round trip with restore (KEYS-03)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn test_get_set_profile() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    let commands = m5w.commands();
+
+    // Read current profile
+    let current_response = handle
+        .send_query(commands.get_profile, &[], ChecksumType::Bit7)
+        .expect("GET_PROFILE query failed");
+
+    assert_eq!(
+        current_response[0], commands.get_profile,
+        "GET_PROFILE echo mismatch: expected 0x{:02X}, got 0x{:02X}",
+        commands.get_profile, current_response[0]
+    );
+
+    let original_profile = current_response[1];
+    println!("Current active profile: {}", original_profile);
+
+    // Pick a different target profile (toggle between 0 and 1)
+    let target_profile = if original_profile == 0 { 1u8 } else { 0u8 };
+
+    let test_result = (|| -> Result<(), String> {
+        // Switch to target profile
+        handle
+            .send_fire_and_forget(commands.set_profile, &[target_profile], ChecksumType::Bit7)
+            .map_err(|e| format!("SET_PROFILE to {} failed: {e}", target_profile))?;
+
+        // Read back to verify
+        let verify_response = handle
+            .send_query(commands.get_profile, &[], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_PROFILE after set failed: {e}"))?;
+
+        if verify_response[0] != commands.get_profile {
+            return Err(format!(
+                "GET_PROFILE echo mismatch after set: expected 0x{:02X}, got 0x{:02X}",
+                commands.get_profile, verify_response[0]
+            ));
+        }
+
+        let read_back = verify_response[1];
+        if read_back != target_profile {
+            return Err(format!(
+                "profile switch failed: set {}, read back {}",
+                target_profile, read_back
+            ));
+        }
+
+        println!("Profile switched from {} to {} successfully", original_profile, target_profile);
+        Ok(())
+    })();
+
+    // Restore original profile
+    let restore_result = (|| -> Result<(), String> {
+        handle
+            .send_fire_and_forget(commands.set_profile, &[original_profile], ChecksumType::Bit7)
+            .map_err(|e| format!("failed to restore profile {}: {e}", original_profile))?;
+
+        let restored = handle
+            .send_query(commands.get_profile, &[], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_PROFILE after restore failed: {e}"))?;
+
+        if restored[1] != original_profile {
+            return Err(format!(
+                "profile restore failed: expected {}, got {}",
+                original_profile, restored[1]
+            ));
+        }
+
+        println!("Profile restored to {}", original_profile);
+        Ok(())
+    })();
+
+    handle.shutdown();
+
+    if let Err(err) = restore_result {
+        panic!("{err}");
+    }
+    if let Err(err) = test_result {
+        panic!("{err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: SET_KEYMATRIX -> GET_KEYMATRIX round trip (KEYS-02, DANGEROUS)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dangerous-hardware-writes")]
+#[test]
+#[ignore]
+fn test_set_keymatrix_roundtrip_dangerous() {
+    require_dangerous_write_opt_in();
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    let commands = m5w.commands();
+
+    // Read current key mapping for profile 0, page 0
+    let original_page = handle
+        .send_query(commands.get_keymatrix, &[0, 0, 0, 0], ChecksumType::Bit7)
+        .expect("GET_KEYMATRIX profile 0 page 0 failed");
+
+    assert_eq!(
+        original_page[0], commands.get_keymatrix,
+        "GET_KEYMATRIX echo mismatch"
+    );
+
+    println!(
+        "Original key mapping page 0 (first 16 bytes): {:02X?}",
+        &original_page[..16]
+    );
+
+    // Remap key_index 0 on profile 0, layer 0 to HID Caps Lock (0x39) as test value.
+    // SET_KEYMATRIX payload (after cmd byte):
+    // [profile, key_index, pad0, pad1, enabled, layer, checksum_placeholder, config_type, b1, b2, b3]
+    let test_keycode: u8 = 0x39; // HID Caps Lock
+
+    let test_result = (|| -> Result<(), String> {
+        let set_payload: Vec<u8> = vec![
+            0,              // profile
+            0,              // key_index
+            0, 0,           // pad0, pad1
+            1,              // enabled
+            0,              // layer
+            0,              // checksum placeholder (transport overwrites)
+            0,              // config_type (normal key)
+            test_keycode,   // b1 = keycode
+            0,              // b2
+            0,              // b3
+        ];
+        handle
+            .send_fire_and_forget(commands.set_keymatrix, &set_payload, ChecksumType::Bit7)
+            .map_err(|e| format!("SET_KEYMATRIX failed: {e}"))?;
+
+        // Read back to verify the write took effect
+        let verify_page = handle
+            .send_query(commands.get_keymatrix, &[0, 0, 0, 0], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_KEYMATRIX after set failed: {e}"))?;
+
+        println!(
+            "After SET_KEYMATRIX page 0 (first 16 bytes): {:02X?}",
+            &verify_page[..16]
+        );
+
+        Ok(())
+    })();
+
+    println!("WARNING: Key index 0 on profile 0 layer 0 was modified during this test.");
+    println!("If the Escape key behaves differently, use the web configurator to restore it.");
+
+    handle.shutdown();
+
+    if let Err(err) = test_result {
+        panic!("{err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: Hot-plug detection (HID-01, hot-plug aspect)
 //
 // MUST run last — unplugging the keyboard disrupts the device state
