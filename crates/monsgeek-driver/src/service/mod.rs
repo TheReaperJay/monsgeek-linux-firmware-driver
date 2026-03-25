@@ -43,10 +43,38 @@ const MAX_PROFILE: u8 = 3;
 /// Non-dangerous commands (reads, SET_LEDPARAM, SET_PROFILE, etc.) pass through
 /// without validation.
 pub(crate) fn validate_dangerous_write(
-    _definition: &DeviceDefinition,
-    _msg: &[u8],
+    definition: &DeviceDefinition,
+    msg: &[u8],
 ) -> Result<(), Status> {
-    // TDD RED stub -- always passes, tests should fail
+    if msg.is_empty() {
+        return Ok(());
+    }
+
+    let cmd = msg[0];
+    let commands = definition.commands();
+
+    if cmd == commands.set_keymatrix {
+        if msg.len() < 7 {
+            return Err(Status::invalid_argument(
+                "SET_KEYMATRIX payload too short: need at least 7 bytes",
+            ));
+        }
+
+        let profile = msg[1];
+        let key_index = msg[2] as u16;
+        let layer = msg[6];
+
+        if profile > MAX_PROFILE {
+            return Err(Status::invalid_argument(format!(
+                "SET_KEYMATRIX profile {} exceeds max {}",
+                profile, MAX_PROFILE
+            )));
+        }
+
+        monsgeek_transport::bounds::validate_write_request(definition, key_index, layer)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+    }
+
     Ok(())
 }
 
@@ -54,6 +82,7 @@ pub(crate) fn validate_dangerous_write(
 struct ConnectedDevice {
     registration: DeviceRegistration,
     handle: TransportHandle,
+    definition: DeviceDefinition,
 }
 
 #[derive(Clone)]
@@ -148,6 +177,7 @@ impl DriverService {
         let connected = ConnectedDevice {
             registration: registration.clone(),
             handle,
+            definition,
         };
 
         self.devices
@@ -326,6 +356,7 @@ impl DriverService {
                         let connected = ConnectedDevice {
                             registration: registration.clone(),
                             handle,
+                            definition,
                         };
 
                         devices
@@ -440,6 +471,45 @@ impl DriverService {
         Err(Status::not_found("device not connected"))
     }
 
+    fn get_device_for_path(&self, path: &str) -> Result<(TransportHandle, DeviceDefinition), Status> {
+        let devices = self.devices.lock().expect("devices map poisoned");
+        if let Some(device) = devices.get(path) {
+            return Ok((device.handle.clone(), device.definition.clone()));
+        }
+
+        let hinted_id = parse_id_hint(path);
+        let parsed_vid_pid = DevicePathRegistry::parse_vid_pid(path);
+
+        if let Some((vid, pid)) = parsed_vid_pid {
+            if let Some(device) = devices.values().find(|device| {
+                device.registration.vid == vid
+                    && device.registration.pid == pid
+                    && hinted_id.is_none_or(|id| device.registration.device_id == id)
+            }) {
+                return Ok((device.handle.clone(), device.definition.clone()));
+            }
+
+            if let Some(id) = hinted_id {
+                if let Some(device) = devices.values().find(|device| {
+                    device.registration.vid == vid && device.registration.device_id == id
+                }) {
+                    return Ok((device.handle.clone(), device.definition.clone()));
+                }
+            }
+        }
+
+        if let Some(id) = hinted_id {
+            if let Some(device) = devices
+                .values()
+                .find(|device| device.registration.device_id == id)
+            {
+                return Ok((device.handle.clone(), device.definition.clone()));
+            }
+        }
+
+        Err(Status::not_found("device not connected"))
+    }
+
     async fn send_command_rpc(
         &self,
         path: &str,
@@ -447,7 +517,8 @@ impl DriverService {
         checksum: ChecksumType,
     ) -> Result<(), Status> {
         self.open_device(path).await?;
-        let handle = self.get_handle_for_path(path)?;
+        let (handle, definition) = self.get_device_for_path(path)?;
+        validate_dangerous_write(&definition, &msg)?;
         bridge_transport::send_command(handle, msg, checksum)
             .await
             .map_err(Status::internal)
