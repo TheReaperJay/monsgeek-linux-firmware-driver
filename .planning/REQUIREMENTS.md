@@ -32,7 +32,7 @@ Requirements for the current milestone. These focus on a working Linux transport
 ### Key Remapping
 
 - [ ] **KEYS-01**: User can read the current key mapping for any profile via GET_KEYMATRIX
-- [ ] **KEYS-02**: User can remap any key on any supported layer via SET_KEYMATRIX
+- [x] **KEYS-02**: User can remap any key on any supported layer via SET_KEYMATRIX
 - [ ] **KEYS-03**: User can switch between the keyboard's supported profiles via SET_PROFILE / GET_PROFILE
 
 ### RGB / LED Control
@@ -127,7 +127,7 @@ Deferred until the core wired bridge is stable.
 | GRPC-07 | Phase 3 | Complete |
 | GRPC-08 | Phase 3 | Complete |
 | KEYS-01 | Phase 4 | Pending |
-| KEYS-02 | Phase 4 | Pending |
+| KEYS-02 | Phase 4 | Complete |
 | KEYS-03 | Phase 4 | Pending |
 | LED-01 | Phase 5 | Pending |
 | LED-02 | Phase 5 | Pending |

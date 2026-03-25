@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 4 context gathered
-last_updated: "2026-03-25T09:51:19.405Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-25T09:58:49.464Z"
 progress:
   total_phases: 9
   completed_phases: 3
   total_plans: 10
-  completed_plans: 8
+  completed_plans: 9
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md),
 ## Current Position
 
 Phase: 04 (bridge-integration-key-remapping) — EXECUTING
-Plan: 1 of 2
+Plan: 2 of 2
 
 ## What Is Verified
 
@@ -82,11 +82,13 @@ Residual follow-up after Phase 2:
 - Live feature writes are not part of default transport validation; they require an explicit dangerous gate and a native recovery path
 - Phase 3 should build on control-only transport by default and treat userspace-input as a separate runtime mode, not a baseline assumption
 - Phase 3 closeout requires explicit human browser verification before marking Nyquist compliant
+- validate_dangerous_write is a pub(crate) free function for direct testability from unit tests
+- Extracted find_connected_device to eliminate device lookup duplication between get_handle_for_path and get_device_for_path
+- MAX_PROFILE=3 as a module constant matching firmware hard limit of 4 profiles (0-3)
 
 ## Pending Todos
 
-- Choose next phase to execute: Phase 04 (Key Remapping), Phase 05 (LED/Tuning), or Phase 05.1 (Userspace Input Daemon)
-- All three depend on Phase 03 (complete) and are independent of each other
+- Execute Phase 04 Plan 02 (key remapping gRPC endpoints)
 
 ## Blockers / Concerns
 
@@ -105,5 +107,5 @@ Residual follow-up after Phase 2:
 ## Session Continuity
 
 Last major checkpoint: 2026-03-25
-Stopped at: Phase 4 context gathered
-Next recommended action: plan and execute next phase (04, 05, or 05.1)
+Stopped at: Completed 04-01-PLAN.md
+Next recommended action: Execute 04-02-PLAN.md
