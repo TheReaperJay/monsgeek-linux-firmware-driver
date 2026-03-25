@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Project Scaffolding & Device Registry** - Rust workspace structure, FEA protocol constants, and JSON-driven device/profile registry with M5W as the first verified target
 - [x] **Phase 2: FEA Protocol & HID Transport** - Protocol framing with checksums, raw HID I/O with safety guards, firmware-ID-aware discovery, non-root access via udev, and control-only default ownership
-- [ ] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
+- [x] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
 - [ ] **Phase 4: Bridge Integration & Key Remapping** - End-to-end web configurator connection with verified key mapping and profile operations on real M5W hardware
 - [ ] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue
 - [ ] **Phase 5.1: Userspace Input Daemon** (INSERTED) - Persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection, bypassing compositor jitter
@@ -182,7 +182,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 |-------|----------------|--------|-----------|
 | 1. Project Scaffolding & Device Registry | 2/2 | Complete | 2026-03-19 |
 | 2. FEA Protocol & HID Transport | 3/3 | Complete | 2026-03-23 |
-| 3. gRPC-Web Bridge | 0/3 | Not started | - |
+| 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
 | 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
 | 5. LED Control & Tuning | 0/2 | Not started | - |
 | 5.1. Userspace Input Daemon (INSERTED) | 0/? | Not started | - |

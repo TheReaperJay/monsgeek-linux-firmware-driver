@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Awaiting manual verification
-stopped_at: Completed automated execution for 03-03-PLAN.md, awaiting manual browser checkpoint
-last_updated: "2026-03-24T02:05:00.000Z"
+status: Phase 03 complete, ready for Phase 04
+stopped_at: Phase 03 manual browser checkpoint passed
+last_updated: "2026-03-25T00:00:00.000Z"
 progress:
   total_phases: 9
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 8
   completed_plans: 8
 ---
@@ -19,12 +19,12 @@ progress:
 See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md), and [.planning/REQUIREMENTS.md](./REQUIREMENTS.md)
 
 **Core value:** The MonsGeek configurator must work on Linux without requiring a Windows machine.
-**Current focus:** Phase 03 manual browser checkpoint (`app.monsgeek.com`) then transition to Phase 04
+**Current focus:** Phase 03 complete. Ready for Phase 04 (Key Remapping), Phase 05 (LED/Tuning), or Phase 05.1 (Userspace Input Daemon) — all independent, all depend on Phase 03.
 
 ## Current Position
 
-Phase: 03 (grpc-web-bridge) — AUTOMATED WORK COMPLETE
-Plan: 3 of 3 (manual checkpoint pending)
+Phase: 03 (grpc-web-bridge) — COMPLETE
+Plan: 3 of 3 (manual browser checkpoint passed 2026-03-25)
 
 ## What Is Verified
 
@@ -85,13 +85,8 @@ Residual follow-up after Phase 2:
 
 ## Pending Todos
 
-- Run manual browser checkpoint:
-  - start bridge on `127.0.0.1:3814`
-  - open `https://app.monsgeek.com`
-  - confirm device appears and at least one command roundtrip succeeds
-  - confirm unplug/replug updates in UI
-- If checkpoint passes: mark Phase 03 complete and set **Ready for Phase 04**
-- If checkpoint fails: record blocker and apply targeted fix before phase closeout
+- Choose next phase to execute: Phase 04 (Key Remapping), Phase 05 (LED/Tuning), or Phase 05.1 (Userspace Input Daemon)
+- All three depend on Phase 03 (complete) and are independent of each other
 
 ## Blockers / Concerns
 
@@ -109,6 +104,6 @@ Residual follow-up after Phase 2:
 
 ## Session Continuity
 
-Last major checkpoint: 2026-03-24  
-Stopped at: Completed 03-03 automated validation and state update
-Next recommended action: run manual browser checkpoint and finalize Phase 03 as Ready for Phase 04
+Last major checkpoint: 2026-03-25
+Stopped at: Phase 03 manual browser checkpoint passed; Phase 5.1 (Userspace Input Daemon) inserted into roadmap based on latency tracing findings
+Next recommended action: plan and execute next phase (04, 05, or 05.1)
