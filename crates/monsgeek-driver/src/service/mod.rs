@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures::Stream;
 use futures::stream::{self, StreamExt};
-use monsgeek_protocol::{ChecksumType, DeviceRegistry};
+use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry};
 use monsgeek_transport::discovery::DeviceInfo;
 use monsgeek_transport::{
     TransportEvent, TransportHandle, TransportOptions, connect_at_with_options,
@@ -31,6 +31,24 @@ use db_store::DbStore;
 use device_registry::{DevicePathRegistry, DeviceRegistration};
 
 const DEVICE_EVENTS_CHANNEL_SIZE: usize = 32;
+const MAX_PROFILE: u8 = 3;
+
+/// Validate dangerous write commands before forwarding to the transport layer.
+///
+/// Currently validates SET_KEYMATRIX commands against device bounds:
+/// - Profile must be <= MAX_PROFILE (3)
+/// - Key index and layer must be within device definition bounds
+/// - Payload must be at least 7 bytes for SET_KEYMATRIX
+///
+/// Non-dangerous commands (reads, SET_LEDPARAM, SET_PROFILE, etc.) pass through
+/// without validation.
+pub(crate) fn validate_dangerous_write(
+    _definition: &DeviceDefinition,
+    _msg: &[u8],
+) -> Result<(), Status> {
+    // TDD RED stub -- always passes, tests should fail
+    Ok(())
+}
 
 #[derive(Clone)]
 struct ConnectedDevice {
@@ -944,6 +962,117 @@ mod tests {
                 .expect("opening set poisoned")
                 .is_empty()
         );
+    }
+
+    fn make_test_definition() -> monsgeek_protocol::DeviceDefinition {
+        monsgeek_protocol::DeviceDefinition {
+            id: 9999,
+            vid: 0x3151,
+            pid: 0x4015,
+            name: "yc3121_test".to_string(),
+            display_name: "Test".to_string(),
+            company: None,
+            device_type: "keyboard".to_string(),
+            sources: vec![],
+            key_count: Some(108),
+            key_layout_name: None,
+            layer: Some(4),
+            fn_sys_layer: None,
+            magnetism: None,
+            no_magnetic_switch: None,
+            has_light_layout: None,
+            has_side_light: None,
+            hot_swap: None,
+            travel_setting: None,
+            led_matrix: None,
+            chip_family: None,
+            command_overrides: None,
+        }
+    }
+
+    fn make_set_keymatrix_msg(cmd: u8, profile: u8, key_index: u8, layer: u8) -> Vec<u8> {
+        let mut msg = vec![0u8; 64];
+        msg[0] = cmd;
+        msg[1] = profile;
+        msg[2] = key_index;
+        msg[6] = layer;
+        msg
+    }
+
+    #[test]
+    fn test_set_keymatrix_valid_passes_through() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix;
+        let msg = make_set_keymatrix_msg(cmd, 0, 50, 1);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_keymatrix_key_index_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix;
+        let msg = make_set_keymatrix_msg(cmd, 0, 108, 0);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("bounds violation"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_keymatrix_layer_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix;
+        let msg = make_set_keymatrix_msg(cmd, 0, 0, 4);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("bounds violation"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_keymatrix_profile_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix;
+        let msg = make_set_keymatrix_msg(cmd, 4, 0, 0);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("profile"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_keymatrix_short_buffer_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix;
+        let msg = vec![cmd, 0, 0];
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("too short"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_non_dangerous_command_passes_through() {
+        let def = make_test_definition();
+        let cmd = def.commands().get_keymatrix;
+        let msg = make_set_keymatrix_msg(cmd, 0, 200, 200);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_keymatrix_boundary_valid() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix;
+        let msg = make_set_keymatrix_msg(cmd, 3, 107, 3);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
     }
 
     #[tokio::test]
