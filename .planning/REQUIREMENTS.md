@@ -57,6 +57,13 @@ Requirements for the current milestone. These focus on a working Linux transport
 - [ ] **MAG-03**: For device profiles that support them, user can read per-key rapid-trigger style configuration
 - [ ] **MAG-04**: For device profiles that support them, user can set per-key actuation/reset points
 
+### Userspace Input Daemon
+
+- [ ] **INPUT-01**: Persistent daemon claims IF0 from the kernel, reads HID boot protocol reports, applies software debounce, and injects cleaned key events via uinput
+- [ ] **INPUT-02**: Daemon corrects same-report key ordering by processing releases before presses and applying deterministic ordering
+- [ ] **INPUT-03**: Daemon runs as a separate binary from the gRPC bridge, with independent lifecycle (keyboard works regardless of whether the configurator is running)
+- [ ] **INPUT-04**: Daemon coexists with the gRPC bridge — bridge claims IF2 for vendor commands while daemon claims IF0 for input
+
 ### Firmware Management
 
 - [ ] **FW-01**: User can read keyboard firmware version via GET_USB_VERSION and GET_REV where available
@@ -82,10 +89,6 @@ Deferred until the core wired bridge is stable.
 
 - **WIRE-01**: 2.4GHz dongle transport with appropriate flow control and response retrieval
 - **WIRE-02**: Bluetooth LE transport via GATT / HOGP where applicable
-
-### Kernel-Level Input Work
-
-- **KERN-01**: eBPF or equivalent kernel/input-layer work if configurator tuning does not solve ghosting/double-letter issues
 
 ### Advanced Tooling
 
@@ -136,6 +139,10 @@ Deferred until the core wired bridge is stable.
 | MAG-02 | Phase 6 | Pending |
 | MAG-03 | Phase 6 | Pending |
 | MAG-04 | Phase 6 | Pending |
+| INPUT-01 | Phase 5.1 | Pending |
+| INPUT-02 | Phase 5.1 | Pending |
+| INPUT-03 | Phase 5.1 | Pending |
+| INPUT-04 | Phase 5.1 | Pending |
 | CLI-01 | Phase 7 | Pending |
 | CLI-02 | Phase 7 | Pending |
 | GRPC-09 | Phase 7 | Pending |
@@ -145,8 +152,8 @@ Deferred until the core wired bridge is stable.
 | FW-04 | Phase 8 | Pending |
 
 **Coverage:**
-- v1 requirements: 36 total
-- Mapped to phases: 36
+- v1 requirements: 40 total
+- Mapped to phases: 40
 - Unmapped: 0
 
 ---

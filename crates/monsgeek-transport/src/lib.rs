@@ -38,7 +38,7 @@ pub use thread::TransportEvent;
 pub use usb::{SessionMode as TransportMode, UsbSession, UsbVersionInfo};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
-use monsgeek_protocol::{ChecksumType, CommandSchemaMap, DeviceDefinition};
+use monsgeek_protocol::{ChecksumType, DeviceDefinition};
 
 use crate::controller::CommandController;
 
@@ -267,14 +267,7 @@ fn spawn_transport(
         TransportMode::UserspaceInput => Some(InputProcessor::new(options.software_debounce_ms)),
     };
 
-    let schema_map = CommandSchemaMap::for_device(device);
-    thread::spawn_transport_thread(
-        cmd_rx,
-        event_tx.clone(),
-        session,
-        schema_map,
-        input_processor,
-    );
+    thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session, input_processor);
     thread::spawn_hotplug_thread(event_tx, device.vid);
 
     Ok((TransportHandle { cmd_tx }, event_rx))

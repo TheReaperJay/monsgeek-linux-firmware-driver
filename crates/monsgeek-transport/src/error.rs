@@ -64,9 +64,6 @@ pub enum TransportError {
         max_payload_len: usize,
     },
 
-    /// Command byte is not in the device's command vocabulary (strict mode).
-    #[error("unknown command 0x{cmd:02X} for this device")]
-    UnknownCommand { cmd: u8 },
 }
 
 impl From<rusb::Error> for TransportError {

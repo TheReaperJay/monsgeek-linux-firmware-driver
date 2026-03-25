@@ -26,6 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
 - [ ] **Phase 4: Bridge Integration & Key Remapping** - End-to-end web configurator connection with verified key mapping and profile operations on real M5W hardware
 - [ ] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue
+- [ ] **Phase 5.1: Userspace Input Daemon** (INSERTED) - Persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection, bypassing compositor jitter
 - [ ] **Phase 6: Macros & Device-Specific Advanced Features** - Macro programming plus device-specific advanced switch features verified where supported by the target profile
 - [ ] **Phase 7: CLI & Service Deployment** - Command-line interface for all keyboard operations, systemd service for auto-start
 - [ ] **Phase 8: Firmware Update** - Firmware validation, bootloader entry with safety gates, chunk transfer with CRC-24 verification
@@ -104,12 +105,27 @@ Plans:
   2. User changes LED effect mode via the web configurator and the keyboard's lighting changes immediately
   3. User reads and adjusts debounce value via the web configurator
   4. User reads and adjusts polling rate via the web configurator
-  5. After tuning debounce/polling, ghosting or double-letter input during normal typing is resolved or significantly reduced
+  5. After tuning debounce/polling, ghosting or double-letter input during normal typing is reduced (full resolution may require Phase 5.1 userspace input daemon)
 **Plans**: TBD
 
 Plans:
 - [ ] 05-01: TBD
 - [ ] 05-02: TBD
+
+### Phase 05.1: Userspace Input Daemon (INSERTED)
+**Goal**: Persistent daemon that claims IF0 from the kernel, reads raw HID boot protocol reports, applies software debounce and correct key ordering, and injects cleaned events via uinput — eliminating compositor jitter and switch bounce from the keyboard input path
+**Depends on**: Phase 2 (transport layer with IF0 claiming, InputProcessor, keymap infrastructure)
+**Requirements**: INPUT-01, INPUT-02, INPUT-03, INPUT-04
+**Success Criteria** (what must be TRUE):
+  1. Daemon binary starts, claims IF0 from kernel, and keyboard input continues to work through uinput virtual device
+  2. Software debounce filters switch bounce (6-12ms spacebar bounces measured in testing) without adding perceptible latency
+  3. Same-report multi-key presses are delivered in deterministic order (releases before presses)
+  4. Daemon coexists with gRPC bridge — bridge on IF2, daemon on IF0, both active simultaneously
+  5. Compositor latency tracer shows reduced jitter compared to kernel usbhid path (p95 < 1ms target)
+**Plans**: TBD
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 05.1 to break down)
 
 ### Phase 6: Macros & Device-Specific Advanced Features
 **Goal**: Users can program macros and configure device-specific advanced switch features via the web configurator on Linux where the target profile supports them
@@ -169,6 +185,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 3. gRPC-Web Bridge | 0/3 | Not started | - |
 | 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
 | 5. LED Control & Tuning | 0/2 | Not started | - |
+| 5.1. Userspace Input Daemon (INSERTED) | 0/? | Not started | - |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
 | 8. Firmware Update | 0/2 | Not started | - |

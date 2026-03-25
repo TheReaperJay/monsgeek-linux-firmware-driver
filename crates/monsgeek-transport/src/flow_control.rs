@@ -12,8 +12,7 @@
 
 use std::time::Duration;
 
-use monsgeek_protocol::timing;
-use monsgeek_protocol::{ChecksumType, build_command};
+use monsgeek_protocol::{ChecksumType, build_command, cmd, timing};
 
 use crate::error::TransportError;
 use crate::usb::UsbSession;
@@ -37,15 +36,24 @@ pub(crate) fn query_command(
     checksum: ChecksumType,
 ) -> Result<[u8; 64], TransportError> {
     let frame = build_command(cmd_byte, data, checksum);
+    log::debug!(
+        "query 0x{:02X} ({}) frame[1..10]={:02X?} checksum={:?} data_len={}",
+        cmd_byte,
+        cmd::name(cmd_byte),
+        &frame[1..10.min(frame.len())],
+        checksum,
+        data.len()
+    );
     let mut last_actual: u8 = 0;
     let mut last_err: Option<TransportError> = None;
 
     for attempt in 0..timing::QUERY_RETRIES {
         if let Err(err) = session.vendor_set_report(&frame[1..]) {
             log::warn!(
-                "Query attempt {} for 0x{:02X} SET_REPORT failed: {}",
+                "Query attempt {} for 0x{:02X} ({}) send failed: {}",
                 attempt + 1,
                 cmd_byte,
+                cmd::name(cmd_byte),
                 err
             );
             last_err = Some(err);
@@ -60,9 +68,10 @@ pub(crate) fn query_command(
             Ok(response) => response,
             Err(err) => {
                 log::warn!(
-                    "Query attempt {} for 0x{:02X} GET_REPORT failed: {}",
+                    "Query attempt {} for 0x{:02X} ({}) read failed: {}",
                     attempt + 1,
                     cmd_byte,
+                    cmd::name(cmd_byte),
                     err
                 );
                 last_err = Some(err);
@@ -117,6 +126,14 @@ pub(crate) fn send_command(
     checksum: ChecksumType,
 ) -> Result<(), TransportError> {
     let frame = build_command(cmd_byte, data, checksum);
+    log::debug!(
+        "send 0x{:02X} ({}) frame[1..10]={:02X?} checksum={:?} data_len={}",
+        cmd_byte,
+        cmd::name(cmd_byte),
+        &frame[1..10.min(frame.len())],
+        checksum,
+        data.len()
+    );
     let mut last_err: Option<TransportError> = None;
 
     for attempt in 0..timing::SEND_RETRIES {
@@ -124,9 +141,10 @@ pub(crate) fn send_command(
             Ok(()) => return Ok(()),
             Err(e) => {
                 log::warn!(
-                    "Send attempt {} for 0x{:02X} failed: {}",
+                    "Send attempt {} for 0x{:02X} ({}) failed: {}",
                     attempt + 1,
                     cmd_byte,
+                    cmd::name(cmd_byte),
                     e
                 );
                 last_err = Some(e);

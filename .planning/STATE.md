@@ -6,7 +6,7 @@ status: Awaiting manual verification
 stopped_at: Completed automated execution for 03-03-PLAN.md, awaiting manual browser checkpoint
 last_updated: "2026-03-24T02:05:00.000Z"
 progress:
-  total_phases: 8
+  total_phases: 9
   completed_phases: 2
   total_plans: 8
   completed_plans: 8
@@ -100,6 +100,12 @@ Residual follow-up after Phase 2:
 - Device-specific advanced features must be treated as per-profile capabilities, not assumed globally across the FEA family
 - Dongle support is not yet implemented and must not be implied as already working
 - Dangerous live writes can still wedge hardware if used carelessly; they remain opt-in and should stay out of routine development flows
+
+## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 5.1 inserted after Phase 5: Userspace Input Daemon (URGENT) — Latency tracing proved kernel HID processing adds only 17us and kernel→userspace delivery is 88us, but Mutter compositor adds 342us p50 with 2.5-18ms jitter at p95. Combined with 6-12ms switch bounce passing through 1ms firmware debounce, the fix requires a userspace daemon that claims IF0, applies software debounce, and injects clean events via uinput. Transport infrastructure (InputProcessor, IF0 claiming, keymap, pump_input) already exists and is tested. Missing piece: uinput virtual device creation and a separate daemon binary.
 
 ## Session Continuity
 

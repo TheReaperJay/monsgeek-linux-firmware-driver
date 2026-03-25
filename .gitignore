@@ -7,3 +7,4 @@
 /firmware/
 /references/
 .codex
+__pycache__/

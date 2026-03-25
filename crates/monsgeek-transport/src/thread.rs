@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use monsgeek_protocol::{ChecksumType, CommandSchemaMap};
+use monsgeek_protocol::ChecksumType;
 
 use crate::controller::CommandController;
 use crate::error::TransportError;
@@ -82,13 +82,12 @@ pub(crate) fn spawn_transport_thread(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
-    schema_map: CommandSchemaMap,
     input_processor: Option<InputProcessor>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("monsgeek-transport".into())
         .spawn(move || {
-            transport_loop(cmd_rx, event_tx, session, schema_map, input_processor);
+            transport_loop(cmd_rx, event_tx, session, input_processor);
         })
         .expect("failed to spawn transport thread")
 }
@@ -100,10 +99,9 @@ fn transport_loop(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
-    schema_map: CommandSchemaMap,
     mut input_processor: Option<InputProcessor>,
 ) {
-    let mut controller = CommandController::with_schema(session, schema_map);
+    let mut controller = CommandController::new(session);
 
     loop {
         let request = if input_processor.is_some() {
@@ -415,7 +413,6 @@ mod tests {
             crossbeam_channel::Receiver<CommandRequest>,
             crossbeam_channel::Sender<TransportEvent>,
             crate::usb::UsbSession,
-            monsgeek_protocol::CommandSchemaMap,
             Option<InputProcessor>,
         ) -> std::thread::JoinHandle<()> = spawn_transport_thread;
     }

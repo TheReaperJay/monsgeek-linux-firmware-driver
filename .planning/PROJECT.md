@@ -42,6 +42,7 @@ The MonsGeek configurator must work on Linux, enabling users to configure, tune,
 
 ## Deferred But Planned
 
+- Userspace input daemon (Phase 5.1): persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection — bypasses compositor jitter and switch bounce issues proven by latency tracing
 - 2.4GHz dongle transport for M5W and related devices
 - Additional validated device profiles beyond the M5W
 - Firmware flashing with explicit safety gates

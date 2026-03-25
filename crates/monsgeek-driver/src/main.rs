@@ -107,6 +107,15 @@ async fn shutdown_signal(service: DriverService) {
 
     tracing::info!("Shutting down active transport sessions");
     service.shutdown();
+
+    // Force exit after a grace period. Tonic's graceful shutdown waits for
+    // active gRPC streams (e.g. watch_dev_list) to close, but browser
+    // clients never close their end. Without this, the process hangs.
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        tracing::info!("Grace period expired, forcing exit");
+        std::process::exit(0);
+    });
 }
 
 fn take_over_existing_driver(port: u16) -> Result<(), AnyError> {

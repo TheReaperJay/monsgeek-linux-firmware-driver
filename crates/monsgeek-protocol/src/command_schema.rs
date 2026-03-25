@@ -406,14 +406,14 @@ mod tests {
     }
 
     #[test]
-    fn schema_map_ry5088_debounce_fixed() {
+    fn schema_map_ry5088_debounce_variable() {
         let device = make_ry5088_device();
         let map = CommandSchemaMap::for_device(&device);
         let table = device.commands();
 
         match map.resolve(table.set_debounce) {
-            CommandResolution::Known(PayloadSchema::FixedSize(1)) => {}
-            other => panic!("expected Known(FixedSize(1)), got {:?}", other),
+            CommandResolution::Known(PayloadSchema::VariableWithMax(_)) => {}
+            other => panic!("expected Known(VariableWithMax), got {:?}", other),
         }
     }
 
