@@ -432,10 +432,10 @@ impl DriverService {
         Err(Status::not_found("device path could not be resolved"))
     }
 
-    fn get_handle_for_path(&self, path: &str) -> Result<TransportHandle, Status> {
+    fn find_connected_device(&self, path: &str) -> Result<ConnectedDevice, Status> {
         let devices = self.devices.lock().expect("devices map poisoned");
         if let Some(device) = devices.get(path) {
-            return Ok(device.handle.clone());
+            return Ok(device.clone());
         }
 
         let hinted_id = parse_id_hint(path);
@@ -447,14 +447,14 @@ impl DriverService {
                     && device.registration.pid == pid
                     && hinted_id.is_none_or(|id| device.registration.device_id == id)
             }) {
-                return Ok(device.handle.clone());
+                return Ok(device.clone());
             }
 
             if let Some(id) = hinted_id {
                 if let Some(device) = devices.values().find(|device| {
                     device.registration.vid == vid && device.registration.device_id == id
                 }) {
-                    return Ok(device.handle.clone());
+                    return Ok(device.clone());
                 }
             }
         }
@@ -464,50 +464,23 @@ impl DriverService {
                 .values()
                 .find(|device| device.registration.device_id == id)
             {
-                return Ok(device.handle.clone());
+                return Ok(device.clone());
             }
         }
 
         Err(Status::not_found("device not connected"))
     }
 
-    fn get_device_for_path(&self, path: &str) -> Result<(TransportHandle, DeviceDefinition), Status> {
-        let devices = self.devices.lock().expect("devices map poisoned");
-        if let Some(device) = devices.get(path) {
-            return Ok((device.handle.clone(), device.definition.clone()));
-        }
+    fn get_handle_for_path(&self, path: &str) -> Result<TransportHandle, Status> {
+        self.find_connected_device(path).map(|d| d.handle)
+    }
 
-        let hinted_id = parse_id_hint(path);
-        let parsed_vid_pid = DevicePathRegistry::parse_vid_pid(path);
-
-        if let Some((vid, pid)) = parsed_vid_pid {
-            if let Some(device) = devices.values().find(|device| {
-                device.registration.vid == vid
-                    && device.registration.pid == pid
-                    && hinted_id.is_none_or(|id| device.registration.device_id == id)
-            }) {
-                return Ok((device.handle.clone(), device.definition.clone()));
-            }
-
-            if let Some(id) = hinted_id {
-                if let Some(device) = devices.values().find(|device| {
-                    device.registration.vid == vid && device.registration.device_id == id
-                }) {
-                    return Ok((device.handle.clone(), device.definition.clone()));
-                }
-            }
-        }
-
-        if let Some(id) = hinted_id {
-            if let Some(device) = devices
-                .values()
-                .find(|device| device.registration.device_id == id)
-            {
-                return Ok((device.handle.clone(), device.definition.clone()));
-            }
-        }
-
-        Err(Status::not_found("device not connected"))
+    fn get_device_for_path(
+        &self,
+        path: &str,
+    ) -> Result<(TransportHandle, DeviceDefinition), Status> {
+        self.find_connected_device(path)
+            .map(|d| (d.handle, d.definition))
     }
 
     async fn send_command_rpc(
