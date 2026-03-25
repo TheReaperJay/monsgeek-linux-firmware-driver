@@ -91,10 +91,11 @@ Plans:
   1. User opens the web configurator, selects a key, and sees its current mapping for the active profile
   2. User remaps a key (e.g., Caps Lock to Ctrl) via the web configurator and the change takes effect immediately on the keyboard
   3. User switches between all 4 profiles and each profile retains its independent key mappings
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01-PLAN.md — Cache DeviceDefinition in ConnectedDevice, add SET_KEYMATRIX bounds validation at gRPC service boundary, unit tests
+- [ ] 04-02-PLAN.md — Hardware integration tests for GET_KEYMATRIX, GET/SET_PROFILE, SET_KEYMATRIX roundtrip, browser verification checkpoint
 
 ### Phase 5: LED Control & Tuning
 **Goal**: Users can control RGB lighting and tune debounce/polling to fix ghosting issues, all via the web configurator on Linux
@@ -183,7 +184,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 1. Project Scaffolding & Device Registry | 2/2 | Complete | 2026-03-19 |
 | 2. FEA Protocol & HID Transport | 3/3 | Complete | 2026-03-23 |
 | 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
-| 4. Bridge Integration & Key Remapping | 0/1 | Not started | - |
+| 4. Bridge Integration & Key Remapping | 0/2 | Not started | - |
 | 5. LED Control & Tuning | 0/2 | Not started | - |
 | 5.1. Userspace Input Daemon (INSERTED) | 0/? | Not started | - |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
