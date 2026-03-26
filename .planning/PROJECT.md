@@ -34,16 +34,18 @@ The MonsGeek configurator must work on Linux, enabling users to configure, tune,
 - Debounce tuning works end-to-end: GET/SET_DEBOUNCE verified on real hardware and through web configurator (Validated in Phase 5)
 - M5W supports GET_REPORT (polling rate query) at 8kHz despite device definition listing get_report: None (Discovered in Phase 5)
 - GET_LEDPARAM uses Bit7 checksum; only SET_LEDPARAM uses Bit8 (Corrected in Phase 5)
+- Userspace input daemon (`monsgeek-inputd`) works end-to-end: claims IF0/IF1 via `SessionMode::InputOnly`, processes HID boot protocol through `InputProcessor` with 15ms debounce, injects events via uinput, coexists with gRPC bridge on IF2 (Validated in Phase 5.1)
+- Daemon survives disconnect/reconnect cycles via udev monitoring with 2s firmware settle time (Validated in Phase 5.1)
+- M5W presents as two USB devices on the same bus: PID 0x4011 (receiver/secondary) and PID 0x4015 (keyboard). Probing PID 0x4011 poisons the firmware's command state for PID 0x4015. Non-probing VID/PID discovery avoids this (Discovered in Phase 5.1)
 
 ## Active Work
 
-- Phase 5 complete — LED control, debounce tuning, and polling rate probe all verified on real M5W hardware and through web configurator
-- Next: Phase 5.1 — Userspace input daemon for software debounce and correct key ordering via uinput
+- Phase 5.1 complete — Userspace input daemon verified on real M5W hardware with disconnect/reconnect, bridge coexistence, and clean shutdown
+- Next: Phase 6 — Macros and device-specific advanced features
 - Keep the registry/profile system data-driven so new supported keyboards do not require hardcoded runtime constants
 
 ## Deferred But Planned
 
-- Userspace input daemon (Phase 5.1): persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection — bypasses compositor jitter and switch bounce issues proven by latency tracing
 - 2.4GHz dongle transport for M5W and related devices
 - Additional validated device profiles beyond the M5W
 - Firmware flashing with explicit safety gates
