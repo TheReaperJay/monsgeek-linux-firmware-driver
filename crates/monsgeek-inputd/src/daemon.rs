@@ -21,7 +21,7 @@ use monsgeek_transport::error::TransportError;
 use monsgeek_transport::input::InputProcessor;
 use monsgeek_transport::usb::{SessionMode, UsbSession};
 
-use crate::uinput_device::{create_uinput_device, emit_actions};
+use monsgeek_inputd::uinput_device::{create_uinput_device, emit_actions};
 
 /// Configuration for the daemon's runtime behavior.
 pub struct DaemonConfig {

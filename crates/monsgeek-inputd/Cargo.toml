@@ -17,5 +17,9 @@ signal-hook = "0.3"
 udev = "0.9.3"
 libc = "0.2.183"
 
+[dev-dependencies]
+simple_logger = "5"
+rusb = "0.9"
+
 [features]
 hardware = []

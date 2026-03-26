@@ -1,6 +1,5 @@
 mod config;
 mod daemon;
-mod uinput_device;
 
 use clap::Parser;
 

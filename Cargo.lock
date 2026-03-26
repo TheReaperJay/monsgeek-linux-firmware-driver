@@ -1139,9 +1139,11 @@ dependencies = [
  "log",
  "monsgeek-protocol",
  "monsgeek-transport",
+ "rusb",
  "sd-notify",
  "serde",
  "signal-hook",
+ "simple_logger",
  "toml",
  "udev",
 ]
