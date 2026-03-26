@@ -1,0 +1,19 @@
+[package]
+name = "monsgeek-inputd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+monsgeek-protocol = { path = "../monsgeek-protocol" }
+monsgeek-transport = { path = "../monsgeek-transport" }
+evdev = "0.13"
+sd-notify = "0.5"
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+log = "0.4"
+env_logger = "0.11"
+signal-hook = "0.3"
+
+[features]
+hardware = []
