@@ -30,14 +30,15 @@ The MonsGeek configurator must work on Linux, enabling users to configure, tune,
 - The transport layer enforces the 100ms firmware safety delay
 - Hot-plug detection works via `udev`
 - Short-lived transport sessions can return `IF0` to the kernel so the keyboard keeps typing after tests
+- LED control works end-to-end: GET/SET_LEDPARAM verified on real M5W hardware and through web configurator (Validated in Phase 5)
+- Debounce tuning works end-to-end: GET/SET_DEBOUNCE verified on real hardware and through web configurator (Validated in Phase 5)
+- M5W supports GET_REPORT (polling rate query) at 8kHz despite device definition listing get_report: None (Discovered in Phase 5)
+- GET_LEDPARAM uses Bit7 checksum; only SET_LEDPARAM uses Bit8 (Corrected in Phase 5)
 
 ## Active Work
 
-- Finish Phase 2 cleanly by splitting transport ownership modes:
-  - control mode: claim `IF2` only and preserve kernel-managed typing on `IF0`
-  - full userspace-input mode: intentionally own `IF0` and translate input ourselves
-- Implement the gRPC-Web bridge on `localhost:3814` so the MonsGeek configurator can talk to Linux
-- Verify feature families on real hardware: remapping, lighting, debounce/polling, macros, and device-specific advanced capabilities
+- Phase 5 complete — LED control, debounce tuning, and polling rate probe all verified on real M5W hardware and through web configurator
+- Next: Phase 5.1 — Userspace input daemon for software debounce and correct key ordering via uinput
 - Keep the registry/profile system data-driven so new supported keyboards do not require hardcoded runtime constants
 
 ## Deferred But Planned
