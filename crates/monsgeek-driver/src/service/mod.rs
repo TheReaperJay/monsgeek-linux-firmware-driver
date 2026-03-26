@@ -737,7 +737,7 @@ impl DriverGrpc for DriverService {
     async fn send_msg(&self, request: Request<SendMsg>) -> Result<Response<ResSend>, Status> {
         let msg = request.into_inner();
         let cmd = msg.msg.first().copied().unwrap_or(0);
-        tracing::debug!(
+        tracing::info!(
             "send_msg: path={} cmd=0x{:02X} bytes={} checksum={}",
             msg.device_path,
             cmd,
@@ -761,7 +761,7 @@ impl DriverGrpc for DriverService {
 
     async fn read_msg(&self, request: Request<ReadMsg>) -> Result<Response<ResRead>, Status> {
         let msg = request.into_inner();
-        tracing::debug!("read_msg: path={}", msg.device_path);
+        tracing::info!("read_msg: path={}", msg.device_path);
         match self.read_response_rpc(&msg.device_path).await {
             Ok(data) => {
                 Ok(Response::new(ResRead {
