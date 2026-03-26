@@ -1,4 +1,5 @@
 mod config;
+mod daemon;
 mod uinput_device;
 
 use clap::Parser;
@@ -20,7 +21,39 @@ fn main() {
     let cli = Cli::parse();
     let config = config::load_config();
     let debounce_ms = config::resolve_debounce_ms(cli.debounce_ms, &config);
+
     log::info!("Effective debounce: {}ms", debounce_ms);
-    // Daemon loop will be implemented in Plan 02
-    eprintln!("monsgeek-inputd: daemon loop not yet implemented");
+
+    let device_filter = cli.device.as_ref().and_then(|d| {
+        let parts: Vec<&str> = d.split(':').collect();
+        if parts.len() == 2 {
+            match (parts[0].parse::<u8>(), parts[1].parse::<u8>()) {
+                (Ok(bus), Ok(addr)) => Some((bus, addr)),
+                _ => {
+                    log::error!(
+                        "Invalid --device format '{}', expected BUS:ADDR (e.g., 001:005)",
+                        d
+                    );
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            log::error!(
+                "Invalid --device format '{}', expected BUS:ADDR (e.g., 001:005)",
+                d
+            );
+            std::process::exit(1);
+        }
+    });
+
+    let daemon_config = daemon::DaemonConfig {
+        debounce_ms,
+        device_filter,
+        device_name: "MonsGeek M5W (monsgeek-inputd)".to_string(),
+    };
+
+    if let Err(e) = daemon::run_daemon(daemon_config) {
+        log::error!("Daemon exited with error: {}", e);
+        std::process::exit(1);
+    }
 }

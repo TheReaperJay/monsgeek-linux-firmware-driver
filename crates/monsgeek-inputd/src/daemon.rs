@@ -38,7 +38,6 @@ enum DaemonError {
     Disconnected,
     Transport(TransportError),
     Io(std::io::Error),
-    Registry(String),
 }
 
 impl fmt::Display for DaemonError {
@@ -47,7 +46,6 @@ impl fmt::Display for DaemonError {
             DaemonError::Disconnected => write!(f, "keyboard disconnected"),
             DaemonError::Transport(e) => write!(f, "transport error: {}", e),
             DaemonError::Io(e) => write!(f, "I/O error: {}", e),
-            DaemonError::Registry(msg) => write!(f, "registry error: {}", msg),
         }
     }
 }
@@ -102,14 +100,14 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
         match try_connect_and_run(&config, &shutdown, vid, pid) {
             Ok(()) => break, // Clean shutdown via signal
             Err(DaemonError::Disconnected) => {
-                sd_notify::notify(false, &[sd_notify::NotifyState::Status(
+                sd_notify::notify(&[sd_notify::NotifyState::Status(
                     "Waiting for keyboard reconnect",
                 )])
                 .ok();
                 log::info!("Waiting for keyboard reconnect via udev...");
                 if let Err(e) = wait_for_device_udev(&shutdown, vid) {
                     log::error!("udev wait failed: {}", e);
-                    return Err(e.into());
+                    return Err(e.to_string().into());
                 }
                 // Loop back to try_connect_and_run with a fresh session
             }
@@ -138,14 +136,11 @@ fn try_connect_and_run(
 
     let mut uinput_dev = create_uinput_device(&config.device_name)?;
 
-    sd_notify::notify(false, &[sd_notify::NotifyState::Ready]).ok();
-    sd_notify::notify(
-        false,
-        &[sd_notify::NotifyState::Status(&format!(
-            "Connected: VID 0x{:04X} PID 0x{:04X}",
-            vid, pid
-        ))],
-    )
+    sd_notify::notify(&[sd_notify::NotifyState::Ready]).ok();
+    sd_notify::notify(&[sd_notify::NotifyState::Status(&format!(
+        "Connected: VID 0x{:04X} PID 0x{:04X}",
+        vid, pid
+    ))])
     .ok();
     log::info!("Connected and polling IF0 (debounce {}ms)", config.debounce_ms);
 
@@ -155,7 +150,7 @@ fn try_connect_and_run(
     while !shutdown.load(Ordering::Relaxed) {
         // Periodic watchdog ping
         if last_watchdog.elapsed() >= WATCHDOG_INTERVAL {
-            sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]).ok();
+            sd_notify::notify(&[sd_notify::NotifyState::Watchdog]).ok();
             last_watchdog = Instant::now();
         }
 
