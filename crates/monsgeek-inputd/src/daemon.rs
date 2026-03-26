@@ -65,6 +65,12 @@ impl From<std::io::Error> for DaemonError {
 /// Interval between sd_notify watchdog pings in the poll loop.
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Number of consecutive read errors before treating as disconnect.
+/// On unplug, some kernels return Pipe or Other instead of NoDevice/Io.
+/// These fall outside the explicit Disconnected mapping in read_report_with_timeout.
+/// Consecutive errors with no successful reads indicate the device is gone.
+const DISCONNECT_ERROR_THRESHOLD: u32 = 10;
+
 /// Path to the device registry JSON files relative to the binary's compile-time
 /// location. At runtime, the daemon resolves this from the cargo workspace root.
 const DEVICE_REGISTRY_PATH: &str = "crates/monsgeek-protocol/devices";
@@ -82,36 +88,51 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
 
     let registry = load_registry()?;
 
-    // Discover the target device once to get its VID/PID for session opening
-    // and reconnect monitoring.
+    // Discover the target device by VID/PID match against the registry.
+    // No USB sessions are opened — just bus descriptor reads.
     let device = find_target_device(&registry, config.device_filter)?;
     let vid = device.vid;
     let pid = device.pid;
 
     log::info!(
-        "Target device: {} (ID {}) VID 0x{:04X} PID 0x{:04X}",
+        "Target device: {} (ID {}) at {:03}:{:03}",
         device.display_name,
         device.device_id,
-        vid,
-        pid
+        device.bus,
+        device.address
     );
 
+    // First connect uses exact bus/address from discovery.
+    // Reconnects use VID/PID since the address changes after replug.
+    let mut use_location = Some((device.bus, device.address));
+
     while !shutdown.load(Ordering::Relaxed) {
-        match try_connect_and_run(&config, &shutdown, vid, pid) {
+        match try_connect_and_run(&config, &shutdown, vid, pid, use_location) {
             Ok(()) => break, // Clean shutdown via signal
-            Err(DaemonError::Disconnected) => {
-                sd_notify::notify(&[sd_notify::NotifyState::Status(
-                    "Waiting for keyboard reconnect",
-                )])
-                .ok();
-                log::info!("Waiting for keyboard reconnect via udev...");
-                if let Err(e) = wait_for_device_udev(&shutdown, vid) {
-                    log::error!("udev wait failed: {}", e);
-                    return Err(e.to_string().into());
+            Err(e) => {
+                use_location = None; // Address may be stale
+                log::warn!("Connection lost: {}", e);
+
+                if matches!(e, DaemonError::Disconnected) {
+                    // Device was unplugged — wait for udev add event
+                    sd_notify::notify(&[sd_notify::NotifyState::Status(
+                        "Waiting for keyboard reconnect",
+                    )])
+                    .ok();
+                    log::info!("Waiting for keyboard reconnect via udev...");
+                    if let Err(e) = wait_for_device_udev(&shutdown, vid) {
+                        log::error!("udev wait failed: {}", e);
+                        return Err(e.to_string().into());
+                    }
                 }
-                // Loop back to try_connect_and_run with a fresh session
+
+                // Settle time: the firmware needs time after re-enumeration
+                // before it accepts control requests (SET_PROTOCOL, etc).
+                if !shutdown.load(Ordering::Relaxed) {
+                    log::info!("Waiting 2s for device to settle...");
+                    std::thread::sleep(Duration::from_secs(2));
+                }
             }
-            Err(e) => return Err(e.to_string().into()),
         }
     }
 
@@ -121,6 +142,10 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
 
 /// Attempt to connect to the keyboard and run the input polling loop.
 ///
+/// When `location` is `Some((bus, addr))`, opens by exact bus/address (initial
+/// connect from discovery). When `None`, opens by VID/PID (reconnect after
+/// unplug, since the address changes).
+///
 /// Returns `Ok(())` on clean signal-initiated shutdown.
 /// Returns `Err(DaemonError::Disconnected)` when the keyboard is unplugged.
 fn try_connect_and_run(
@@ -128,8 +153,13 @@ fn try_connect_and_run(
     shutdown: &Arc<AtomicBool>,
     vid: u16,
     pid: u16,
+    location: Option<(u8, u8)>,
 ) -> Result<(), DaemonError> {
-    let session = UsbSession::open_with_mode(vid, pid, SessionMode::InputOnly)?;
+    let session = if let Some((bus, addr)) = location {
+        UsbSession::open_at_with_mode(bus, addr, SessionMode::InputOnly)?
+    } else {
+        UsbSession::open_with_mode(vid, pid, SessionMode::InputOnly)?
+    };
 
     // Fresh InputProcessor per connect to clear stale debounce state.
     let mut processor = InputProcessor::new(config.debounce_ms);
@@ -146,6 +176,7 @@ fn try_connect_and_run(
 
     let mut report = [0u8; 8];
     let mut last_watchdog = Instant::now();
+    let mut consecutive_errors: u32 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
         // Periodic watchdog ping
@@ -156,6 +187,7 @@ fn try_connect_and_run(
 
         match session.read_report_with_timeout(&mut report, Duration::from_millis(10)) {
             Ok(n) if n >= 8 => {
+                consecutive_errors = 0;
                 let actions = processor.process_report(&report);
                 if !actions.is_empty() {
                     if let Err(e) = emit_actions(&mut uinput_dev, &actions) {
@@ -165,7 +197,10 @@ fn try_connect_and_run(
                     }
                 }
             }
-            Ok(_) => {} // Timeout or short read, continue polling
+            Ok(_) => {
+                // Timeout or short read — endpoint is alive, reset error counter
+                consecutive_errors = 0;
+            }
             Err(TransportError::Disconnected) => {
                 log::warn!("Keyboard disconnected");
                 let release_actions = processor.release_all_keys();
@@ -175,7 +210,20 @@ fn try_connect_and_run(
                 return Err(DaemonError::Disconnected);
             }
             Err(e) => {
-                log::debug!("IF0 poll error: {}", e);
+                consecutive_errors += 1;
+                if consecutive_errors >= DISCONNECT_ERROR_THRESHOLD {
+                    log::warn!(
+                        "Keyboard disconnected ({} consecutive errors, last: {})",
+                        consecutive_errors,
+                        e
+                    );
+                    let release_actions = processor.release_all_keys();
+                    let _ = emit_actions(&mut uinput_dev, &release_actions);
+                    drop(uinput_dev);
+                    drop(session);
+                    return Err(DaemonError::Disconnected);
+                }
+                log::warn!("IF0 poll error ({}x): {}", consecutive_errors, e);
             }
         }
     }
@@ -281,7 +329,7 @@ fn find_target_device(
     registry: &DeviceRegistry,
     device_filter: Option<(u8, u8)>,
 ) -> Result<DeviceInfo, Box<dyn std::error::Error>> {
-    let devices = discovery::enumerate_devices(registry)?;
+    let devices = discovery::find_devices_no_probe(registry)?;
 
     if devices.is_empty() {
         return Err("No MonsGeek keyboards found. Is the keyboard connected?".into());

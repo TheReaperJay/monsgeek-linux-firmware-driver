@@ -49,6 +49,55 @@ pub fn enumerate_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, T
     probe_devices(registry)
 }
 
+/// Find connected USB devices by matching VID/PID against the registry.
+///
+/// This function never opens a USB session, never claims interfaces, and never
+/// sends vendor commands. It reads USB descriptors from the bus and matches
+/// them against the registry's VID/PID index.
+///
+/// Use this for callers that open the device themselves (e.g., in
+/// `SessionMode::InputOnly`) and cannot tolerate IF2 claims, vendor commands,
+/// or STALL recovery resets that [`probe_devices`] performs.
+pub fn find_devices_no_probe(
+    registry: &DeviceRegistry,
+) -> Result<Vec<DeviceInfo>, TransportError> {
+    if registry.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let context = rusb::Context::new()?;
+    let devices = context.devices()?;
+    let mut found = Vec::new();
+
+    for device in devices.iter() {
+        let descriptor = match device.device_descriptor() {
+            Ok(desc) => desc,
+            Err(_) => continue,
+        };
+
+        let vid = descriptor.vendor_id();
+        let pid = descriptor.product_id();
+        let matches = registry.find_by_vid_pid(vid, pid);
+
+        if matches.is_empty() {
+            continue;
+        }
+
+        let definition = matches[0];
+        found.push(DeviceInfo {
+            vid,
+            pid,
+            device_id: definition.id,
+            display_name: definition.display_name.clone(),
+            name: definition.name.clone(),
+            bus: device.bus_number(),
+            address: device.address(),
+        });
+    }
+
+    Ok(found)
+}
+
 /// Probe connected USB devices and identify them by firmware device ID.
 ///
 /// Unlike [`enumerate_devices`], this function does not trust USB PID alone.
