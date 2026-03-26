@@ -25,7 +25,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: FEA Protocol & HID Transport** - Protocol framing with checksums, raw HID I/O with safety guards, firmware-ID-aware discovery, non-root access via udev, and control-only default ownership
 - [x] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
 - [ ] **Phase 4: Bridge Integration & Key Remapping** - End-to-end web configurator connection with verified key mapping and profile operations on real M5W hardware
-- [ ] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue
+- [x] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue (completed 2026-03-26)
 - [ ] **Phase 5.1: Userspace Input Daemon** (INSERTED) - Persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection, bypassing compositor jitter
 - [ ] **Phase 6: Macros & Device-Specific Advanced Features** - Macro programming plus device-specific advanced switch features verified where supported by the target profile
 - [ ] **Phase 7: CLI & Service Deployment** - Command-line interface for all keyboard operations, systemd service for auto-start
@@ -185,7 +185,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 2. FEA Protocol & HID Transport | 3/3 | Complete | 2026-03-23 |
 | 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
 | 4. Bridge Integration & Key Remapping | 0/2 | Not started | - |
-| 5. LED Control & Tuning | 1/2 | In Progress|  |
+| 5. LED Control & Tuning | 2/2 | Complete   | 2026-03-26 |
 | 5.1. Userspace Input Daemon (INSERTED) | 0/? | Not started | - |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
