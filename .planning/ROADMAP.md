@@ -123,10 +123,12 @@ Plans:
   3. Same-report multi-key presses are delivered in deterministic order (releases before presses)
   4. Daemon coexists with gRPC bridge — bridge on IF2, daemon on IF0, both active simultaneously
   5. Compositor latency tracer shows reduced jitter compared to kernel usbhid path (p95 < 1ms target)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] TBD (run /gsd:plan-phase 05.1 to break down)
+- [ ] 05.1-01-PLAN.md — SessionMode::InputOnly transport extension and monsgeek-inputd crate scaffold with config and uinput modules
+- [ ] 05.1-02-PLAN.md — Daemon main loop with IF0 polling, lifecycle management, signal handling, and sd_notify integration
+- [ ] 05.1-03-PLAN.md — Hardware integration tests and human verification of daemon on real M5W keyboard
 
 ### Phase 6: Macros & Device-Specific Advanced Features
 **Goal**: Users can program macros and configure device-specific advanced switch features via the web configurator on Linux where the target profile supports them
@@ -186,7 +188,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
 | 4. Bridge Integration & Key Remapping | 0/2 | Not started | - |
 | 5. LED Control & Tuning | 2/2 | Complete   | 2026-03-26 |
-| 5.1. Userspace Input Daemon (INSERTED) | 0/? | Not started | - |
+| 5.1. Userspace Input Daemon (INSERTED) | 0/3 | Not started | - |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
 | 8. Firmware Update | 0/2 | Not started | - |
