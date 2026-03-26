@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-stopped_at: Completed 05.1-02-PLAN.md
-last_updated: "2026-03-26T15:51:30.213Z"
+status: phase_complete
+stopped_at: Completed 05.1-03-PLAN.md (Phase 05.1 complete)
+last_updated: "2026-03-26T18:00:23.366Z"
 progress:
   total_phases: 9
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 15
-  completed_plans: 14
+  completed_plans: 15
 ---
 
 # Project State
@@ -23,8 +23,8 @@ See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md),
 
 ## Current Position
 
-Phase: 05.1 (userspace-input-daemon) — EXECUTING
-Plan: 3 of 3
+Phase: 05.1 (userspace-input-daemon) — COMPLETE
+Plan: 3 of 3 (all complete)
 
 ## What Is Verified
 
@@ -95,6 +95,10 @@ Residual follow-up after Phase 2:
 - sd-notify 0.5 API takes &[NotifyState] without bool first argument (changed from 0.4)
 - Fresh InputProcessor created per connect to clear stale debounce state on reconnect
 - 500ms settle delay after udev reconnect event before attempting USB open
+- find_devices_no_probe avoids IF2 claims and STALL recovery during input-daemon discovery
+- Initial connect uses exact bus/address; reconnect uses VID/PID since address changes after replug
+- 10 consecutive read errors trigger disconnect detection for ambiguous kernel error codes
+- All daemon connection errors retry with 2s settle instead of exiting
 
 ## Pending Todos
 
@@ -116,6 +120,6 @@ Residual follow-up after Phase 2:
 
 ## Session Continuity
 
-Last major checkpoint: 2026-03-26
-Stopped at: Completed 05.1-02-PLAN.md
-Next recommended action: Execute 05.1-03-PLAN.md (hardware verification and systemd integration)
+Last major checkpoint: 2026-03-27
+Stopped at: Completed 05.1-03-PLAN.md (Phase 05.1 complete)
+Next recommended action: Resume remaining phases (Phase 4, 6, 7, or 8)

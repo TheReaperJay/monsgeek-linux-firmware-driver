@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: gRPC-Web Bridge** - tonic-web server on localhost:3814 implementing the full iot_driver proto contract with CORS for browser access
 - [ ] **Phase 4: Bridge Integration & Key Remapping** - End-to-end web configurator connection with verified key mapping and profile operations on real M5W hardware
 - [x] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue (completed 2026-03-26)
-- [ ] **Phase 5.1: Userspace Input Daemon** (INSERTED) - Persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection, bypassing compositor jitter
+- [x] **Phase 5.1: Userspace Input Daemon** (INSERTED) - Persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection, bypassing compositor jitter (completed 2026-03-27)
 - [ ] **Phase 6: Macros & Device-Specific Advanced Features** - Macro programming plus device-specific advanced switch features verified where supported by the target profile
 - [ ] **Phase 7: CLI & Service Deployment** - Command-line interface for all keyboard operations, systemd service for auto-start
 - [ ] **Phase 8: Firmware Update** - Firmware validation, bootloader entry with safety gates, chunk transfer with CRC-24 verification
@@ -126,9 +126,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 05.1-01-PLAN.md — SessionMode::InputOnly transport extension and monsgeek-inputd crate scaffold with config and uinput modules
-- [ ] 05.1-02-PLAN.md — Daemon main loop with IF0 polling, lifecycle management, signal handling, and sd_notify integration
-- [ ] 05.1-03-PLAN.md — Hardware integration tests and human verification of daemon on real M5W keyboard
+- [x] 05.1-01-PLAN.md — SessionMode::InputOnly transport extension and monsgeek-inputd crate scaffold with config and uinput modules
+- [x] 05.1-02-PLAN.md — Daemon main loop with IF0 polling, lifecycle management, signal handling, and sd_notify integration
+- [x] 05.1-03-PLAN.md — Hardware integration tests and human verification of daemon on real M5W keyboard
 
 ### Phase 6: Macros & Device-Specific Advanced Features
 **Goal**: Users can program macros and configure device-specific advanced switch features via the web configurator on Linux where the target profile supports them
@@ -188,7 +188,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
 | 4. Bridge Integration & Key Remapping | 0/2 | Not started | - |
 | 5. LED Control & Tuning | 2/2 | Complete   | 2026-03-26 |
-| 5.1. Userspace Input Daemon (INSERTED) | 2/3 | In Progress|  |
+| 5.1. Userspace Input Daemon (INSERTED) | 3/3 | Complete   | 2026-03-27 |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
 | 8. Firmware Update | 0/2 | Not started | - |
