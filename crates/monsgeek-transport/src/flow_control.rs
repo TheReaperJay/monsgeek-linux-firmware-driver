@@ -127,10 +127,10 @@ pub(crate) fn send_command(
 ) -> Result<(), TransportError> {
     let frame = build_command(cmd_byte, data, checksum);
     log::debug!(
-        "send 0x{:02X} ({}) frame[1..10]={:02X?} checksum={:?} data_len={}",
+        "send 0x{:02X} ({}) wire[0..16]={:02X?} checksum={:?} data_len={}",
         cmd_byte,
         cmd::name(cmd_byte),
-        &frame[1..10.min(frame.len())],
+        &frame[1..17.min(frame.len())],
         checksum,
         data.len()
     );

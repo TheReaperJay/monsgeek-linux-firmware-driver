@@ -64,6 +64,14 @@ pub struct CommandOverrides {
     #[serde(default)]
     pub get_keymatrix: Option<u8>,
     #[serde(default)]
+    pub set_keymatrix_simple: Option<u8>,
+    #[serde(default)]
+    pub get_keymatrix_simple: Option<u8>,
+    #[serde(default)]
+    pub set_fn_simple: Option<u8>,
+    #[serde(default)]
+    pub get_fn_simple: Option<u8>,
+    #[serde(default)]
     pub set_report: Option<u8>,
     #[serde(default)]
     pub set_kboption: Option<u8>,
@@ -189,6 +197,18 @@ impl DeviceDefinition {
             }
             if let Some(value) = overrides.get_keymatrix {
                 table.get_keymatrix = value;
+            }
+            if let Some(value) = overrides.set_keymatrix_simple {
+                table.set_keymatrix_simple = Some(value);
+            }
+            if let Some(value) = overrides.get_keymatrix_simple {
+                table.get_keymatrix_simple = Some(value);
+            }
+            if let Some(value) = overrides.set_fn_simple {
+                table.set_fn_simple = Some(value);
+            }
+            if let Some(value) = overrides.get_fn_simple {
+                table.get_fn_simple = Some(value);
             }
             if let Some(value) = overrides.set_report {
                 table.set_report = Some(value);

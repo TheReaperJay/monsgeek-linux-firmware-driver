@@ -35,10 +35,10 @@ const MAX_PROFILE: u8 = 3;
 
 /// Validate dangerous write commands before forwarding to the transport layer.
 ///
-/// Currently validates SET_KEYMATRIX commands against device bounds:
+/// Validates SET_KEYMATRIX and SET_KEYMATRIX_SIMPLE commands against device bounds:
 /// - Profile must be <= MAX_PROFILE (3)
 /// - Key index and layer must be within device definition bounds
-/// - Payload must be at least 7 bytes for SET_KEYMATRIX
+/// - Payload must be at least 7 bytes for SET_KEYMATRIX, 3 bytes for SET_KEYMATRIX_SIMPLE
 ///
 /// Non-dangerous commands (reads, SET_LEDPARAM, SET_PROFILE, etc.) pass through
 /// without validation.
@@ -75,7 +75,66 @@ pub(crate) fn validate_dangerous_write(
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
     }
 
+    if commands.set_keymatrix_simple.is_some_and(|c| c == cmd) {
+        if msg.len() < 3 {
+            return Err(Status::invalid_argument(
+                "SET_KEYMATRIX_SIMPLE payload too short: need at least 3 bytes",
+            ));
+        }
+
+        let profile = msg[1];
+        let key_index = msg[2] as u16;
+
+        if profile > MAX_PROFILE {
+            return Err(Status::invalid_argument(format!(
+                "SET_KEYMATRIX_SIMPLE profile {} exceeds max {}",
+                profile, MAX_PROFILE
+            )));
+        }
+
+        // SIMPLE commands have no layer byte; pass layer=0 for bounds check.
+        monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+    }
+
     Ok(())
+}
+
+/// Normalize SIMPLE keymatrix config bytes to fix the web app's reset bug.
+///
+/// The web app sends config bytes `[0, 0, keycode, 0]` when resetting a key to
+/// its default, but the YiChip firmware's SIMPLE handler reads config[1] as the
+/// keycode. This means config[1]=0 produces a dead key. This function detects
+/// the reset pattern and moves the keycode from config[2] to config[1].
+///
+/// Only applies to SET_KEYMATRIX_SIMPLE (0x13) and SET_FN_SIMPLE (0x15).
+/// Non-SIMPLE commands and non-reset configs pass through unchanged.
+pub(crate) fn normalize_simple_keymatrix(
+    definition: &DeviceDefinition,
+    mut msg: Vec<u8>,
+) -> Vec<u8> {
+    if msg.len() < 12 {
+        return msg;
+    }
+
+    let cmd = msg[0];
+    let commands = definition.commands();
+
+    let is_simple = commands.set_keymatrix_simple.is_some_and(|c| c == cmd)
+        || commands.set_fn_simple.is_some_and(|c| c == cmd);
+
+    if !is_simple {
+        return msg;
+    }
+
+    // Config bytes are at msg[8..12] in the 64-byte HID frame.
+    let config = &msg[8..12];
+    if config[0] == 0 && config[1] == 0 && config[2] != 0 && config[3] == 0 {
+        msg[9] = msg[10];
+        msg[10] = 0;
+    }
+
+    msg
 }
 
 #[derive(Clone)]
@@ -492,6 +551,7 @@ impl DriverService {
         self.open_device(path).await?;
         let (handle, definition) = self.get_device_for_path(path)?;
         validate_dangerous_write(&definition, &msg)?;
+        let msg = normalize_simple_keymatrix(&definition, msg);
         bridge_transport::send_command(handle, msg, checksum)
             .await
             .map_err(Status::internal)
@@ -677,12 +737,12 @@ impl DriverGrpc for DriverService {
     async fn send_msg(&self, request: Request<SendMsg>) -> Result<Response<ResSend>, Status> {
         let msg = request.into_inner();
         let cmd = msg.msg.first().copied().unwrap_or(0);
-        tracing::info!(
+        tracing::debug!(
             "send_msg: path={} cmd=0x{:02X} bytes={} checksum={}",
             msg.device_path,
             cmd,
             msg.msg.len(),
-            msg.check_sum_type
+            msg.check_sum_type,
         );
         let checksum = proto_checksum_to_protocol(msg.check_sum_type);
         match self
@@ -701,12 +761,14 @@ impl DriverGrpc for DriverService {
 
     async fn read_msg(&self, request: Request<ReadMsg>) -> Result<Response<ResRead>, Status> {
         let msg = request.into_inner();
-        tracing::info!("read_msg: path={}", msg.device_path);
+        tracing::debug!("read_msg: path={}", msg.device_path);
         match self.read_response_rpc(&msg.device_path).await {
-            Ok(data) => Ok(Response::new(ResRead {
-                err: String::new(),
-                msg: data,
-            })),
+            Ok(data) => {
+                Ok(Response::new(ResRead {
+                    err: String::new(),
+                    msg: data,
+                }))
+            }
             Err(e) => {
                 tracing::warn!("read_msg failed for path={}: {}", msg.device_path, e);
                 Ok(Response::new(ResRead {
@@ -1117,6 +1179,94 @@ mod tests {
         let cmd = def.commands().set_keymatrix;
         let msg = make_set_keymatrix_msg(cmd, 3, 107, 3);
         assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    /// Build a 64-byte SIMPLE command frame with config bytes at msg[8..12].
+    fn make_simple_msg(cmd: u8, profile: u8, key_index: u8, config: [u8; 4]) -> Vec<u8> {
+        let mut msg = vec![0u8; 64];
+        msg[0] = cmd;
+        msg[1] = profile;
+        msg[2] = key_index;
+        msg[8] = config[0];
+        msg[9] = config[1];
+        msg[10] = config[2];
+        msg[11] = config[3];
+        msg
+    }
+
+    #[test]
+    fn test_normalize_simple_reset_config() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix_simple.unwrap();
+        let msg = make_simple_msg(cmd, 0, 5, [0, 0, 7, 0]);
+        let result = super::normalize_simple_keymatrix(&def, msg);
+        assert_eq!(result[8], 0, "config[0] stays 0");
+        assert_eq!(result[9], 7, "config[1] should now hold the keycode");
+        assert_eq!(result[10], 0, "config[2] should be cleared");
+        assert_eq!(result[11], 0, "config[3] stays 0");
+    }
+
+    #[test]
+    fn test_normalize_simple_remap_unchanged() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix_simple.unwrap();
+        let msg = make_simple_msg(cmd, 0, 5, [0, 5, 0, 0]);
+        let result = super::normalize_simple_keymatrix(&def, msg);
+        assert_eq!(result[8..12], [0, 5, 0, 0]);
+    }
+
+    #[test]
+    fn test_normalize_simple_forbidden_unchanged() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix_simple.unwrap();
+        // All zeros — not a reset pattern (config[2] == 0).
+        let msg = make_simple_msg(cmd, 0, 5, [0, 0, 0, 0]);
+        let result = super::normalize_simple_keymatrix(&def, msg);
+        assert_eq!(result[8..12], [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_normalize_simple_macro_unchanged() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix_simple.unwrap();
+        // config[0]=9 means macro type — not the reset pattern.
+        let msg = make_simple_msg(cmd, 0, 5, [9, 0, 7, 0]);
+        let result = super::normalize_simple_keymatrix(&def, msg);
+        assert_eq!(result[8..12], [9, 0, 7, 0]);
+    }
+
+    #[test]
+    fn test_normalize_simple_fn_reset_config() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_fn_simple.unwrap();
+        let msg = make_simple_msg(cmd, 0, 5, [0, 0, 7, 0]);
+        let result = super::normalize_simple_keymatrix(&def, msg);
+        assert_eq!(result[9], 7);
+        assert_eq!(result[10], 0);
+    }
+
+    #[test]
+    fn test_normalize_non_simple_unchanged() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix; // 0x09 — NOT simple
+        let msg = make_simple_msg(cmd, 0, 5, [0, 0, 7, 0]);
+        let result = super::normalize_simple_keymatrix(&def, msg);
+        // Non-SIMPLE command should pass through without modification.
+        assert_eq!(result[8..12], [0, 0, 7, 0]);
+    }
+
+    #[test]
+    fn test_set_keymatrix_simple_bounds_validated() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_keymatrix_simple.unwrap();
+        // key_index 108 is OOB for 108-key device (valid range: 0..107).
+        let msg = make_simple_msg(cmd, 0, 108, [0, 5, 0, 0]);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("bounds violation"),
+            "got: {}",
+            err.message()
+        );
     }
 
     #[tokio::test]
