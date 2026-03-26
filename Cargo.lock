@@ -1135,6 +1135,7 @@ dependencies = [
  "clap",
  "env_logger",
  "evdev",
+ "libc",
  "log",
  "monsgeek-protocol",
  "monsgeek-transport",
@@ -1142,6 +1143,7 @@ dependencies = [
  "serde",
  "signal-hook",
  "toml",
+ "udev",
 ]
 
 [[package]]
