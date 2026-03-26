@@ -4,11 +4,11 @@ milestone: v1.0
 milestone_name: milestone
 status: unknown
 stopped_at: Phase 5.1 context gathered
-last_updated: "2026-03-26T14:53:30.685Z"
+last_updated: "2026-03-26T15:36:36.853Z"
 progress:
   total_phases: 9
   completed_phases: 5
-  total_plans: 12
+  total_plans: 15
   completed_plans: 12
 ---
 
@@ -19,12 +19,12 @@ progress:
 See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md), and [.planning/REQUIREMENTS.md](./REQUIREMENTS.md)
 
 **Core value:** The MonsGeek configurator must work on Linux without requiring a Windows machine.
-**Current focus:** Phase 05 — led-control-tuning (COMPLETE)
+**Current focus:** Phase 05.1 — userspace-input-daemon
 
 ## Current Position
 
-Phase: 05 (led-control-tuning) — COMPLETE
-Plan: 2 of 2 (all plans complete)
+Phase: 05.1 (userspace-input-daemon) — EXECUTING
+Plan: 1 of 3
 
 ## What Is Verified
 

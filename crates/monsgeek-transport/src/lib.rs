@@ -69,6 +69,13 @@ impl TransportOptions {
             software_debounce_ms,
         }
     }
+
+    pub fn input_only(software_debounce_ms: u64) -> Self {
+        Self {
+            mode: TransportMode::InputOnly,
+            software_debounce_ms,
+        }
+    }
 }
 
 /// Handle for sending commands to a connected MonsGeek keyboard.
@@ -264,7 +271,9 @@ fn spawn_transport(
     let (event_tx, event_rx) = bounded(32);
     let input_processor = match options.mode {
         TransportMode::ControlOnly => None,
-        TransportMode::UserspaceInput => Some(InputProcessor::new(options.software_debounce_ms)),
+        TransportMode::UserspaceInput | TransportMode::InputOnly => {
+            Some(InputProcessor::new(options.software_debounce_ms))
+        }
     };
 
     thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session, input_processor);
@@ -438,6 +447,13 @@ mod tests {
             handle.shutdown();
         }
         let _ = check_shutdown as fn(TransportHandle);
+    }
+
+    #[test]
+    fn test_transport_options_input_only() {
+        let options = TransportOptions::input_only(15);
+        assert_eq!(options.mode, TransportMode::InputOnly);
+        assert_eq!(options.software_debounce_ms, 15);
     }
 
     #[test]

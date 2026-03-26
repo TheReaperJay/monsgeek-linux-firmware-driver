@@ -50,6 +50,8 @@ pub enum SessionMode {
     /// Intentionally claim IF0/IF1/IF2 and expose translated input via the
     /// transport layer rather than relying on the kernel keyboard stack.
     UserspaceInput,
+    /// Claim IF0/IF1 only for input processing. Leaves IF2 free for the gRPC bridge.
+    InputOnly,
 }
 
 /// A USB session holding a claimed device handle for HID I/O.
@@ -58,6 +60,7 @@ pub enum SessionMode {
 /// [`SessionMode`]:
 /// - [`SessionMode::ControlOnly`]: claim IF2 only for vendor commands
 /// - [`SessionMode::UserspaceInput`]: claim IF0/IF1/IF2 and enable boot-protocol input
+/// - [`SessionMode::InputOnly`]: claim IF0/IF1 for input, leave IF2 free for the gRPC bridge
 ///
 /// # Lifetime
 ///
@@ -175,7 +178,7 @@ impl UsbSession {
 
         let handle = device.open()?;
 
-        let claims_input = matches!(mode, SessionMode::UserspaceInput);
+        let claims_input = matches!(mode, SessionMode::UserspaceInput | SessionMode::InputOnly);
         let ep_in = if claims_input {
             let config = device.active_config_descriptor()?;
             let ep_in = config
@@ -203,10 +206,10 @@ impl UsbSession {
         // the detach logic remains as a fallback for systems without the quirk.
         let mut detached_if0 = false;
         let mut detached_if2 = false;
-        let interfaces: &[u8] = if claims_input {
-            &[IF0, IF1, IF2]
-        } else {
-            &[IF2]
+        let interfaces: &[u8] = match mode {
+            SessionMode::ControlOnly => &[IF2],
+            SessionMode::UserspaceInput => &[IF0, IF1, IF2],
+            SessionMode::InputOnly => &[IF0, IF1],
         };
 
         for &iface in interfaces {
@@ -227,7 +230,11 @@ impl UsbSession {
             handle.claim_interface(iface)?;
         }
 
-        let claimed = if claims_input { "IF0, IF1, IF2" } else { "IF2" };
+        let claimed = match mode {
+            SessionMode::ControlOnly => "IF2",
+            SessionMode::UserspaceInput => "IF0, IF1, IF2",
+            SessionMode::InputOnly => "IF0, IF1",
+        };
         log::info!(
             "USB: claimed {} on bus {:03} addr {:03}",
             claimed,
@@ -459,10 +466,10 @@ impl UsbSession {
 
 impl Drop for UsbSession {
     fn drop(&mut self) {
-        let interfaces: &[u8] = if self.ep_in.is_some() {
-            &[IF0, IF1, IF2]
-        } else {
-            &[IF2]
+        let interfaces: &[u8] = match self.mode {
+            SessionMode::ControlOnly => &[IF2],
+            SessionMode::UserspaceInput => &[IF0, IF1, IF2],
+            SessionMode::InputOnly => &[IF0, IF1],
         };
 
         for &iface in interfaces {
@@ -547,6 +554,34 @@ mod tests {
         assert_eq!(info.device_id, 1308);
         assert_eq!(info.device_id_i32(), 1308);
         assert_eq!(info.firmware_version, 0x0070);
+    }
+
+    #[test]
+    fn test_session_mode_input_only_variant() {
+        let input_only = SessionMode::InputOnly;
+        let control_only = SessionMode::ControlOnly;
+        let userspace_input = SessionMode::UserspaceInput;
+
+        assert_ne!(input_only, control_only);
+        assert_ne!(input_only, userspace_input);
+        assert_ne!(control_only, userspace_input);
+    }
+
+    #[test]
+    fn test_session_mode_input_only_debug() {
+        let mode = SessionMode::InputOnly;
+        let debug = format!("{:?}", mode);
+        assert!(
+            debug.contains("InputOnly"),
+            "Debug output should contain 'InputOnly', got: {}",
+            debug
+        );
+    }
+
+    #[test]
+    fn test_session_mode_default_unchanged() {
+        let default = SessionMode::default();
+        assert_eq!(default, SessionMode::ControlOnly);
     }
 
     #[test]
