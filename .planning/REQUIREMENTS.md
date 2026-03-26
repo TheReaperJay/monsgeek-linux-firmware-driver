@@ -37,13 +37,13 @@ Requirements for the current milestone. These focus on a working Linux transport
 
 ### RGB / LED Control
 
-- [ ] **LED-01**: User can read current LED mode, brightness, speed, and color via GET_LEDPARAM
-- [ ] **LED-02**: User can set LED mode, brightness, speed, and color via SET_LEDPARAM
+- [x] **LED-01**: User can read current LED mode, brightness, speed, and color via GET_LEDPARAM
+- [x] **LED-02**: User can set LED mode, brightness, speed, and color via SET_LEDPARAM
 
 ### Debounce & Polling
 
-- [ ] **TUNE-01**: User can read and set debounce value via GET_DEBOUNCE / SET_DEBOUNCE
-- [ ] **TUNE-02**: User can read and set polling rate via GET_REPORT / SET_REPORT where supported
+- [x] **TUNE-01**: User can read and set debounce value via GET_DEBOUNCE / SET_DEBOUNCE
+- [x] **TUNE-02**: User can read and set polling rate via GET_REPORT / SET_REPORT where supported
 
 ### Macros
 
@@ -129,10 +129,10 @@ Deferred until the core wired bridge is stable.
 | KEYS-01 | Phase 4 | Pending |
 | KEYS-02 | Phase 4 | Complete |
 | KEYS-03 | Phase 4 | Pending |
-| LED-01 | Phase 5 | Pending |
-| LED-02 | Phase 5 | Pending |
-| TUNE-01 | Phase 5 | Pending |
-| TUNE-02 | Phase 5 | Pending |
+| LED-01 | Phase 5 | Complete |
+| LED-02 | Phase 5 | Complete |
+| TUNE-01 | Phase 5 | Complete |
+| TUNE-02 | Phase 5 | Complete |
 | MACR-01 | Phase 6 | Pending |
 | MACR-02 | Phase 6 | Pending |
 | MAG-01 | Phase 6 | Pending |

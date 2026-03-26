@@ -185,7 +185,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 2. FEA Protocol & HID Transport | 3/3 | Complete | 2026-03-23 |
 | 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
 | 4. Bridge Integration & Key Remapping | 0/2 | Not started | - |
-| 5. LED Control & Tuning | 0/2 | Not started | - |
+| 5. LED Control & Tuning | 1/2 | In Progress|  |
 | 5.1. Userspace Input Daemon (INSERTED) | 0/? | Not started | - |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
