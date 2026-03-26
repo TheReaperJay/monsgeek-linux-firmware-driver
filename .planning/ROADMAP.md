@@ -107,11 +107,11 @@ Plans:
   3. User reads and adjusts debounce value via the web configurator
   4. User reads and adjusts polling rate via the web configurator
   5. After tuning debounce/polling, ghosting or double-letter input during normal typing is reduced (full resolution may require Phase 5.1 userspace input daemon)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
+- [ ] 05-01-PLAN.md — CommandSchemaMap audit: add missing GET_REPORT/SET_REPORT shared entries, document checksum types, unit tests
+- [ ] 05-02-PLAN.md — Hardware integration tests for LED read/write, polling rate probe, and browser verification checkpoint
 
 ### Phase 05.1: Userspace Input Daemon (INSERTED)
 **Goal**: Persistent daemon that claims IF0 from the kernel, reads raw HID boot protocol reports, applies software debounce and correct key ordering, and injects cleaned events via uinput — eliminating compositor jitter and switch bounce from the keyboard input path
