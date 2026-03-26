@@ -60,8 +60,8 @@ Requirements for the current milestone. These focus on a working Linux transport
 ### Userspace Input Daemon
 
 - [x] **INPUT-01**: Persistent daemon claims IF0 from the kernel, reads HID boot protocol reports, applies software debounce, and injects cleaned key events via uinput
-- [ ] **INPUT-02**: Daemon corrects same-report key ordering by processing releases before presses and applying deterministic ordering
-- [ ] **INPUT-03**: Daemon runs as a separate binary from the gRPC bridge, with independent lifecycle (keyboard works regardless of whether the configurator is running)
+- [x] **INPUT-02**: Daemon corrects same-report key ordering by processing releases before presses and applying deterministic ordering
+- [x] **INPUT-03**: Daemon runs as a separate binary from the gRPC bridge, with independent lifecycle (keyboard works regardless of whether the configurator is running)
 - [x] **INPUT-04**: Daemon coexists with the gRPC bridge — bridge claims IF2 for vendor commands while daemon claims IF0 for input
 
 ### Firmware Management
@@ -140,8 +140,8 @@ Deferred until the core wired bridge is stable.
 | MAG-03 | Phase 6 | Pending |
 | MAG-04 | Phase 6 | Pending |
 | INPUT-01 | Phase 5.1 | Complete |
-| INPUT-02 | Phase 5.1 | Pending |
-| INPUT-03 | Phase 5.1 | Pending |
+| INPUT-02 | Phase 5.1 | Complete |
+| INPUT-03 | Phase 5.1 | Complete |
 | INPUT-04 | Phase 5.1 | Complete |
 | CLI-01 | Phase 7 | Pending |
 | CLI-02 | Phase 7 | Pending |

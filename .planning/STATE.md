@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 05.1-01-PLAN.md
-last_updated: "2026-03-26T15:36:36.853Z"
+stopped_at: Completed 05.1-02-PLAN.md
+last_updated: "2026-03-26T15:51:30.213Z"
 progress:
   total_phases: 9
   completed_phases: 5
   total_plans: 15
-  completed_plans: 13
+  completed_plans: 14
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md),
 ## Current Position
 
 Phase: 05.1 (userspace-input-daemon) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 
 ## What Is Verified
 
@@ -92,6 +92,9 @@ Residual follow-up after Phase 2:
 - SessionMode::InputOnly claims IF0/IF1 only, leaving IF2 free for gRPC bridge coexistence
 - Match-on-mode dispatch replaces boolean flags for all interface selection in usb.rs
 - evdev 0.13 uses KeyCode (not Key) and InputEvent::new takes raw u16 for event type
+- sd-notify 0.5 API takes &[NotifyState] without bool first argument (changed from 0.4)
+- Fresh InputProcessor created per connect to clear stale debounce state on reconnect
+- 500ms settle delay after udev reconnect event before attempting USB open
 
 ## Pending Todos
 
@@ -114,5 +117,5 @@ Residual follow-up after Phase 2:
 ## Session Continuity
 
 Last major checkpoint: 2026-03-26
-Stopped at: Completed 05.1-01-PLAN.md
-Next recommended action: Execute 05.1-02-PLAN.md (daemon event loop)
+Stopped at: Completed 05.1-02-PLAN.md
+Next recommended action: Execute 05.1-03-PLAN.md (hardware verification and systemd integration)

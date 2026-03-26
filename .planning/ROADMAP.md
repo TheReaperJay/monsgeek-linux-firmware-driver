@@ -188,7 +188,7 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 3. gRPC-Web Bridge | 3/3 | Complete | 2026-03-25 |
 | 4. Bridge Integration & Key Remapping | 0/2 | Not started | - |
 | 5. LED Control & Tuning | 2/2 | Complete   | 2026-03-26 |
-| 5.1. Userspace Input Daemon (INSERTED) | 0/3 | Not started | - |
+| 5.1. Userspace Input Daemon (INSERTED) | 2/3 | In Progress|  |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
 | 7. CLI & Service Deployment | 0/2 | Not started | - |
 | 8. Firmware Update | 0/2 | Not started | - |
