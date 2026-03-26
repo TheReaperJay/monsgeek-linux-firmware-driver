@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 5.1 context gathered
+stopped_at: Completed 05.1-01-PLAN.md
 last_updated: "2026-03-26T15:36:36.853Z"
 progress:
   total_phases: 9
   completed_phases: 5
   total_plans: 15
-  completed_plans: 12
+  completed_plans: 13
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md),
 ## Current Position
 
 Phase: 05.1 (userspace-input-daemon) — EXECUTING
-Plan: 1 of 3
+Plan: 2 of 3
 
 ## What Is Verified
 
@@ -89,6 +89,9 @@ Residual follow-up after Phase 2:
 - Checksum types documented as comments only; schema map does not enforce checksum type
 - GET_LEDPARAM uses Bit7 checksum (not Bit8 as planned); only SET_LEDPARAM uses Bit8
 - M5W firmware supports GET_REPORT (rate_code=0 / 8kHz) despite device definition having get_report: None
+- SessionMode::InputOnly claims IF0/IF1 only, leaving IF2 free for gRPC bridge coexistence
+- Match-on-mode dispatch replaces boolean flags for all interface selection in usb.rs
+- evdev 0.13 uses KeyCode (not Key) and InputEvent::new takes raw u16 for event type
 
 ## Pending Todos
 
@@ -110,6 +113,6 @@ Residual follow-up after Phase 2:
 
 ## Session Continuity
 
-Last major checkpoint: 2026-03-25
-Stopped at: Phase 5.1 context gathered
-Next recommended action: Proceed to next phase
+Last major checkpoint: 2026-03-26
+Stopped at: Completed 05.1-01-PLAN.md
+Next recommended action: Execute 05.1-02-PLAN.md (daemon event loop)
