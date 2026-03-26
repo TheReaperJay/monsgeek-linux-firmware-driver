@@ -259,6 +259,13 @@ fn register_shared_commands(entries: &mut HashMap<u8, CommandResolution>) {
     let var_max = PayloadSchema::VariableWithMax(MAX_PAYLOAD_SIZE);
 
     // ── Shared SET commands ─────────────────────────────────────────────
+    //
+    // Checksum types per reference implementation (documented, not enforced):
+    //   SET_LEDPARAM / GET_LEDPARAM: Bit8
+    //   SET_SLEDPARAM / GET_SLEDPARAM: Bit8
+    //   SET_REPORT / GET_REPORT: Bit7
+    //   SET_DEBOUNCE / GET_DEBOUNCE: Bit7 (device-specific entries handle this)
+    //   All other shared commands: Bit7
 
     entries
         .entry(cmd::SET_LEDPARAM)
@@ -274,6 +281,9 @@ fn register_shared_commands(entries: &mut HashMap<u8, CommandResolution>) {
         .or_insert_with(|| CommandResolution::Shared(var_max.clone()));
     entries
         .entry(cmd::SET_SCREEN_COLOR)
+        .or_insert_with(|| CommandResolution::Shared(var_max.clone()));
+    entries
+        .entry(cmd::SET_REPORT)
         .or_insert_with(|| CommandResolution::Shared(var_max.clone()));
     entries
         .entry(cmd::SET_FN)
@@ -310,6 +320,7 @@ fn register_shared_commands(entries: &mut HashMap<u8, CommandResolution>) {
         cmd::GET_LEDONOFF,
         cmd::GET_LEDPARAM,
         cmd::GET_SLEDPARAM,
+        cmd::GET_REPORT,
         cmd::GET_USB_VERSION,
         cmd::GET_FN,
         cmd::GET_AUTOOS_EN,
@@ -538,5 +549,70 @@ mod tests {
     #[test]
     fn schema_map_max_payload_size_constant() {
         assert_eq!(MAX_PAYLOAD_SIZE, 63);
+    }
+
+    #[test]
+    fn schema_map_m5w_get_report_shared() {
+        // M5W (YiChip) has get_report: None, so the shared backfill applies.
+        let device = make_yichip_device();
+        let map = CommandSchemaMap::for_device(&device);
+        match map.resolve(cmd::GET_REPORT) {
+            CommandResolution::Shared(PayloadSchema::VariableWithMax(_)) => {}
+            other => panic!(
+                "expected Shared(VariableWithMax) for GET_REPORT on M5W, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn schema_map_m5w_set_report_shared() {
+        // M5W (YiChip) has set_report: None, so the shared backfill applies.
+        let device = make_yichip_device();
+        let map = CommandSchemaMap::for_device(&device);
+        match map.resolve(cmd::SET_REPORT) {
+            CommandResolution::Shared(PayloadSchema::VariableWithMax(_)) => {}
+            other => panic!(
+                "expected Shared(VariableWithMax) for SET_REPORT on M5W, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn schema_map_m5w_led_commands_shared() {
+        // SET_LEDPARAM (0x07) and GET_LEDPARAM (0x87) are not in the YiChip
+        // device-specific command table, so they resolve as Shared.
+        let device = make_yichip_device();
+        let map = CommandSchemaMap::for_device(&device);
+        match map.resolve(cmd::SET_LEDPARAM) {
+            CommandResolution::Shared(PayloadSchema::VariableWithMax(_)) => {}
+            other => panic!(
+                "expected Shared(VariableWithMax) for SET_LEDPARAM on M5W, got {:?}",
+                other
+            ),
+        }
+        match map.resolve(cmd::GET_LEDPARAM) {
+            CommandResolution::Shared(PayloadSchema::VariableWithMax(_)) => {}
+            other => panic!(
+                "expected Shared(VariableWithMax) for GET_LEDPARAM on M5W, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn schema_map_ry5088_get_report_known() {
+        // RY5088 has get_report: Some(0x83), so the device-specific Known entry
+        // wins over the shared backfill.
+        let device = make_ry5088_device();
+        let map = CommandSchemaMap::for_device(&device);
+        match map.resolve(cmd::GET_REPORT) {
+            CommandResolution::Known(PayloadSchema::VariableWithMax(_)) => {}
+            other => panic!(
+                "expected Known(VariableWithMax) for GET_REPORT on RY5088, got {:?}",
+                other
+            ),
+        }
     }
 }
