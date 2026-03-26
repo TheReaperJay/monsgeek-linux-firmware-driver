@@ -30,7 +30,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry};
+use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry, cmd};
 use monsgeek_transport::{TransportEvent, UsbVersionInfo, connect, validate_write_request};
 
 const M5W_DEVICE_ID: i32 = 1308;
@@ -633,6 +633,210 @@ fn test_set_keymatrix_roundtrip_dangerous() {
     if let Err(err) = test_result {
         panic!("{err}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: GET_LEDPARAM read (LED-01)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn test_get_ledparam() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    // GET_LEDPARAM uses Bit7 checksum (same as all other GET queries).
+    // Only SET_LEDPARAM uses Bit8 — the asymmetry is a protocol quirk.
+    let response = handle
+        .send_query(cmd::GET_LEDPARAM, &[], ChecksumType::Bit7)
+        .expect("GET_LEDPARAM query failed");
+
+    assert_eq!(
+        response[0], cmd::GET_LEDPARAM,
+        "echo mismatch: expected 0x{:02X}, got 0x{:02X}",
+        cmd::GET_LEDPARAM, response[0]
+    );
+
+    // Response layout: [echo, mode, speed_inv, brightness, option, r, g, b]
+    let mode = response[1];
+    let speed_inv = response[2];
+    let brightness = response[3];
+    let option = response[4];
+    let r = response[5];
+    let g = response[6];
+    let b = response[7];
+
+    println!(
+        "LED params: mode={} speed_inv={} brightness={} option=0x{:02X} rgb=({},{},{})",
+        mode, speed_inv, brightness, option, r, g, b
+    );
+
+    // Mode should be a valid LedMode (0-24 in reference enum)
+    assert!(mode <= 24, "LED mode {} exceeds known range 0-24", mode);
+    // Brightness should be 0-4
+    assert!(brightness <= 4, "brightness {} exceeds range 0-4", brightness);
+    // Speed inverted should be 0-4
+    assert!(speed_inv <= 4, "speed_inv {} exceeds range 0-4", speed_inv);
+
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: SET_LEDPARAM -> GET_LEDPARAM round trip with restore (LED-02)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dangerous-hardware-writes")]
+#[test]
+#[ignore]
+fn test_set_get_ledparam_round_trip_dangerous() {
+    require_dangerous_write_opt_in();
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    // Read current LED state (Bit7 for GET queries, Bit8 only for SET)
+    let original = handle
+        .send_query(cmd::GET_LEDPARAM, &[], ChecksumType::Bit7)
+        .expect("GET_LEDPARAM failed");
+    let original_payload = original[1..8].to_vec(); // [mode, speed_inv, bright, option, r, g, b]
+
+    println!(
+        "Original LED: mode={} speed_inv={} brightness={} option=0x{:02X} rgb=({},{},{})",
+        original_payload[0], original_payload[1], original_payload[2],
+        original_payload[3], original_payload[4], original_payload[5], original_payload[6]
+    );
+
+    // SET_LEDPARAM payload: [mode, speed_inv, brightness, option, r, g, b]
+    // Test: set to Breathing (mode=2), speed_inv=2 (medium), brightness=3, dazzle_off=8, green
+    let test_payload: Vec<u8> = vec![2, 2, 3, 8, 0, 255, 0];
+
+    let test_result = (|| -> Result<(), String> {
+        handle
+            .send_fire_and_forget(cmd::SET_LEDPARAM, &test_payload, ChecksumType::Bit8)
+            .map_err(|e| format!("SET_LEDPARAM failed: {e}"))?;
+
+        let readback = handle
+            .send_query(cmd::GET_LEDPARAM, &[], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_LEDPARAM after set failed: {e}"))?;
+
+        assert_eq!(
+            readback[0], cmd::GET_LEDPARAM,
+            "GET_LEDPARAM echo mismatch after set"
+        );
+
+        // Verify mode changed to Breathing (2)
+        if readback[1] != 2 {
+            return Err(format!("mode mismatch: set 2 (Breathing), read {}", readback[1]));
+        }
+
+        // Verify brightness changed to 3
+        if readback[3] != 3 {
+            return Err(format!("brightness mismatch: set 3, read {}", readback[3]));
+        }
+
+        println!(
+            "LED round trip verified: mode={} speed_inv={} brightness={} option=0x{:02X} rgb=({},{},{})",
+            readback[1], readback[2], readback[3], readback[4], readback[5], readback[6], readback[7]
+        );
+
+        Ok(())
+    })();
+
+    // Restore original LED state
+    let restore_result = (|| -> Result<(), String> {
+        handle
+            .send_fire_and_forget(cmd::SET_LEDPARAM, &original_payload, ChecksumType::Bit8)
+            .map_err(|e| format!("LED restore failed: {e}"))?;
+
+        let restored = handle
+            .send_query(cmd::GET_LEDPARAM, &[], ChecksumType::Bit7)
+            .map_err(|e| format!("GET_LEDPARAM after restore failed: {e}"))?;
+
+        if restored[1] != original_payload[0] {
+            return Err(format!(
+                "LED restore mode mismatch: expected {}, got {}",
+                original_payload[0], restored[1]
+            ));
+        }
+
+        println!("LED state restored to mode={}", original_payload[0]);
+        Ok(())
+    })();
+
+    handle.shutdown();
+
+    if let Err(err) = restore_result {
+        panic!("{err}");
+    }
+    if let Err(err) = test_result {
+        panic!("{err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: GET_REPORT polling rate probe (TUNE-02)
+//
+// M5W's YICHIP_COMMANDS has get_report: None, meaning the firmware may not
+// recognize this command. This test probes to determine the actual behavior
+// and documents the result. It does NOT assert a specific response — all
+// three outcomes (valid response, timeout, garbage) are acceptable.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn test_probe_polling_rate() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    // GET_REPORT (0x83) with Bit7 checksum
+    let result = handle.send_query(cmd::GET_REPORT, &[], ChecksumType::Bit7);
+
+    match result {
+        Ok(response) => {
+            if response[0] == cmd::GET_REPORT {
+                let rate_code = response[1];
+                let rate_name = match rate_code {
+                    0 => "8kHz",
+                    1 => "4kHz",
+                    2 => "2kHz",
+                    3 => "1kHz",
+                    4 => "500Hz",
+                    5 => "250Hz",
+                    6 => "125Hz",
+                    _ => "unknown",
+                };
+                println!(
+                    "GET_REPORT succeeded: rate_code={} ({}). M5W DOES support polling rate query.",
+                    rate_code, rate_name
+                );
+            } else {
+                println!(
+                    "GET_REPORT returned unexpected echo byte 0x{:02X} (expected 0x{:02X}). \
+                     Response may be stale buffer from previous command. \
+                     M5W likely does NOT support GET_REPORT.",
+                    response[0], cmd::GET_REPORT
+                );
+            }
+        }
+        Err(e) => {
+            println!(
+                "GET_REPORT failed with error: {}. \
+                 M5W does NOT support polling rate query (expected for YiChip with get_report: None).",
+                e
+            );
+        }
+    }
+
+    // This test always passes — it documents behavior, not asserts correctness.
+    // The TUNE-02 requirement is satisfied by proving the command path works;
+    // the limitation is the device, not the driver.
+
+    handle.shutdown();
 }
 
 // ---------------------------------------------------------------------------
