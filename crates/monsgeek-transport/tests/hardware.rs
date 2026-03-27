@@ -840,6 +840,183 @@ fn test_probe_polling_rate() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 15: GET_MACRO read from slot 0 (MACR-01)
+//
+// M5W (yc3121) firmware does NOT echo the command byte (0x8B) in GET_MACRO
+// responses — response[0] is 0x00. This means send_query's echo matching
+// always fails. We use the split send/read pattern (send_fire_and_forget +
+// read_feature_report) to bypass echo matching, matching how the gRPC bridge
+// reads macro data.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn test_get_macro_read() {
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    // GET_MACRO via split send/read: send the query, then read the response.
+    // The query payload is [macro_index=0, page=0].
+    handle
+        .send_fire_and_forget(cmd::GET_MACRO, &[0, 0], ChecksumType::Bit7)
+        .expect("GET_MACRO send failed");
+
+    let response = handle
+        .read_feature_report()
+        .expect("GET_MACRO read failed");
+
+    println!(
+        "GET_MACRO slot 0 page 0 response (first 16 bytes): {:02X?}",
+        &response[..16]
+    );
+    println!(
+        "GET_MACRO response[0] = 0x{:02X} (M5W does not echo 0x8B here)",
+        response[0]
+    );
+
+    // The response is valid if we got data back without a USB error.
+    // We cannot assert response[0] == 0x8B because M5W firmware doesn't echo it.
+
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: SET_MACRO -> GET_MACRO round trip with restore (MACR-02, DANGEROUS)
+//
+// Uses split send/read for all GET_MACRO operations because M5W firmware
+// does not echo the command byte. See test 15 comment for details.
+// ---------------------------------------------------------------------------
+
+/// Helper: read macro data via split send/read (bypasses echo matching).
+#[cfg(feature = "dangerous-hardware-writes")]
+fn read_macro_slot(handle: &monsgeek_transport::TransportHandle, slot: u8, page: u8) -> Result<[u8; 64], String> {
+    handle
+        .send_fire_and_forget(cmd::GET_MACRO, &[slot, page], ChecksumType::Bit7)
+        .map_err(|e| format!("GET_MACRO send failed: {e}"))?;
+    handle
+        .read_feature_report()
+        .map_err(|e| format!("GET_MACRO read failed: {e}"))
+}
+
+#[cfg(feature = "dangerous-hardware-writes")]
+#[test]
+#[ignore]
+fn test_set_get_macro_round_trip_dangerous() {
+    require_dangerous_write_opt_in();
+    let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = load_registry();
+    let m5w = load_m5w(&registry);
+    let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
+
+    let commands = m5w.commands();
+    let test_slot: u8 = 0; // Use slot 0 to avoid GET_MACRO stride bug
+
+    // Read original macro data from slot 0, page 0
+    let original_page0 = read_macro_slot(&handle, test_slot, 0)
+        .expect("GET_MACRO for original data failed");
+
+    println!(
+        "Original macro slot {} page 0 (first 16 bytes): {:02X?}",
+        test_slot,
+        &original_page0[..16]
+    );
+
+    // Build test macro payload following SetMacroHeader wire format:
+    // [macro_index, page, chunk_len, is_last, pad0, pad1, checksum_placeholder, ...payload_data]
+    // send_fire_and_forget(cmd, data, checksum) where data excludes the command byte.
+    let test_pattern: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+
+    let test_result = (|| -> Result<(), String> {
+        let mut set_payload = vec![0u8; 63]; // Full payload (transport pads to 64 with cmd byte)
+        set_payload[0] = test_slot;           // macro_index
+        set_payload[1] = 0;                   // page = 0
+        set_payload[2] = test_pattern.len() as u8; // chunk_len
+        set_payload[3] = 1;                   // is_last = true
+        // set_payload[4..6] = pad (already zero)
+        // set_payload[6] = checksum placeholder (transport overwrites)
+        set_payload[7..7 + test_pattern.len()].copy_from_slice(&test_pattern);
+
+        handle
+            .send_fire_and_forget(commands.set_macro, &set_payload, ChecksumType::Bit7)
+            .map_err(|e| format!("SET_MACRO failed: {e}"))?;
+
+        // Read back to verify the write
+        let readback = read_macro_slot(&handle, test_slot, 0)?;
+
+        println!(
+            "Readback after SET_MACRO (first 16 bytes): {:02X?}",
+            &readback[..16]
+        );
+
+        // Verify test pattern is present in the readback.
+        // GET_MACRO response layout may differ from SET_MACRO layout, so we
+        // search for our recognizable pattern anywhere in the 64-byte response.
+        let pattern_found = readback
+            .windows(test_pattern.len())
+            .any(|w| w == test_pattern);
+
+        if !pattern_found {
+            return Err(format!(
+                "test pattern {:02X?} not found in GET_MACRO readback: {:02X?}",
+                test_pattern, &readback[..]
+            ));
+        }
+
+        println!("Test pattern verified in readback");
+        Ok(())
+    })();
+
+    // Restore original macro data -- always attempt even if test failed
+    let restore_result = (|| -> Result<(), String> {
+        // Reconstruct SET_MACRO payload from original GET_MACRO response.
+        // We write back the entire original response data as a single-page macro.
+        let mut restore_payload = vec![0u8; 63];
+        restore_payload[0] = test_slot;       // macro_index
+        restore_payload[1] = 0;               // page = 0
+        let restore_len = 56usize;            // max chunk payload size
+        restore_payload[2] = restore_len as u8; // chunk_len
+        restore_payload[3] = 1;               // is_last = true
+        // Copy original data starting after the header region of the GET response.
+        // GET_MACRO response bytes 7..63 contain the macro payload data.
+        restore_payload[7..7 + restore_len].copy_from_slice(&original_page0[7..7 + restore_len]);
+
+        handle
+            .send_fire_and_forget(commands.set_macro, &restore_payload, ChecksumType::Bit7)
+            .map_err(|e| format!("SET_MACRO restore failed: {e}"))?;
+
+        // Verify restoration
+        let verify = read_macro_slot(&handle, test_slot, 0)?;
+
+        println!(
+            "Restored macro slot {} (first 16 bytes): {:02X?}",
+            test_slot,
+            &verify[..16]
+        );
+
+        // Compare payload region of the response (bytes 7..63 contain macro data)
+        if verify[7..63] != original_page0[7..63] {
+            return Err(format!(
+                "macro restore mismatch in payload region (bytes 7..63)"
+            ));
+        }
+
+        println!("Macro slot {} restored successfully", test_slot);
+        Ok(())
+    })();
+
+    handle.shutdown();
+
+    if let Err(err) = restore_result {
+        panic!("{err}");
+    }
+    if let Err(err) = test_result {
+        panic!("{err}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: Hot-plug detection (HID-01, hot-plug aspect)
 //
 // MUST run last — unplugging the keyboard disrupts the device state
