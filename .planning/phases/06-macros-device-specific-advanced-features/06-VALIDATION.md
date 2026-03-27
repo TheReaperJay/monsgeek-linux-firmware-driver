@@ -38,9 +38,9 @@ created: 2026-03-27
 
 | Task ID | Plan | Wave | Requirement | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|-----------|-------------------|-------------|--------|
-| 06-01-01 | 01 | 1 | MACR-02 | unit | `cargo test -p monsgeek-driver validate_dangerous_write_set_macro` | ❌ W0 | ⬜ pending |
-| 06-01-02 | 01 | 1 | N/A | unit | `cargo test -p monsgeek-driver validate_dangerous_write_set_fn` | ❌ W0 | ⬜ pending |
-| 06-01-03 | 01 | 1 | N/A | unit | `cargo test -p monsgeek-driver validate_dangerous_write_magnetic` | ❌ W0 | ⬜ pending |
+| 06-01-01 | 01 | 1 | MACR-02 | unit | `cargo test -p monsgeek-driver test_set_macro` | ❌ W0 | ⬜ pending |
+| 06-01-02 | 01 | 1 | N/A | unit | `cargo test -p monsgeek-driver test_set_fn` | ❌ W0 | ⬜ pending |
+| 06-01-03 | 01 | 1 | N/A | unit | `cargo test -p monsgeek-driver test_magnetic_cmd` | ❌ W0 | ⬜ pending |
 | 06-02-01 | 02 | 2 | MACR-01 | hardware | `cargo test -p monsgeek-transport --features hardware -- --ignored test_get_macro --nocapture` | ❌ W0 | ⬜ pending |
 | 06-02-02 | 02 | 2 | MACR-02 | hardware (dangerous) | `MONSGEEK_ENABLE_DANGEROUS_WRITES=1 cargo test -p monsgeek-transport --features "hardware dangerous-hardware-writes" -- --ignored test_set_get_macro --nocapture` | ❌ W0 | ⬜ pending |
 | 06-02-03 | 02 | 2 | MAG-01, MAG-02 | unit | `cargo test -p monsgeek-transport --test magnetism test_magnetism_calibration_start_stop_format` | ❌ W0 | ⬜ pending |
