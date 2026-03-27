@@ -4,11 +4,11 @@ milestone: v1.0
 milestone_name: milestone
 status: unknown
 stopped_at: Phase 6 context gathered
-last_updated: "2026-03-27T05:39:23.123Z"
+last_updated: "2026-03-27T06:43:22.688Z"
 progress:
   total_phases: 9
   completed_phases: 6
-  total_plans: 15
+  total_plans: 17
   completed_plans: 15
 ---
 
@@ -19,12 +19,12 @@ progress:
 See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md), and [.planning/REQUIREMENTS.md](./REQUIREMENTS.md)
 
 **Core value:** The MonsGeek configurator must work on Linux without requiring a Windows machine.
-**Current focus:** Phase 05.1 — userspace-input-daemon
+**Current focus:** Phase 06 — macros-device-specific-advanced-features
 
 ## Current Position
 
-Phase: 05.1 (userspace-input-daemon) — COMPLETE
-Plan: 3 of 3 (all complete)
+Phase: 06 (macros-device-specific-advanced-features) — EXECUTING
+Plan: 1 of 2
 
 ## What Is Verified
 

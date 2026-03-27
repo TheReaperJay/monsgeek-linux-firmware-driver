@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures::Stream;
 use futures::stream::{self, StreamExt};
-use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry};
+use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry, cmd};
 use monsgeek_transport::discovery::DeviceInfo;
 use monsgeek_transport::{
     TransportEvent, TransportHandle, TransportOptions, connect_at_with_options,
@@ -32,13 +32,17 @@ use device_registry::{DevicePathRegistry, DeviceRegistration};
 
 const DEVICE_EVENTS_CHANNEL_SIZE: usize = 32;
 const MAX_PROFILE: u8 = 3;
+const MAX_MACRO_INDEX: u8 = 49;
+const MAX_CHUNK_PAGE: u8 = 9;
 
 /// Validate dangerous write commands before forwarding to the transport layer.
 ///
-/// Validates SET_KEYMATRIX and SET_KEYMATRIX_SIMPLE commands against device bounds:
-/// - Profile must be <= MAX_PROFILE (3)
-/// - Key index and layer must be within device definition bounds
-/// - Payload must be at least 7 bytes for SET_KEYMATRIX, 3 bytes for SET_KEYMATRIX_SIMPLE
+/// Validates the following commands against device bounds:
+/// - **SET_KEYMATRIX:** profile <= 3, key_index/layer within device bounds, min 7 bytes
+/// - **SET_KEYMATRIX_SIMPLE:** profile <= 3, key_index within device bounds, min 3 bytes
+/// - **SET_MACRO:** macro_index <= 49, chunk_page <= 9, min 3 bytes
+/// - **SET_FN:** profile <= 3, key_index within device bounds, min 4 bytes
+/// - **Magnetic SET commands:** rejected with `failed_precondition` if device lacks magnetic switches
 ///
 /// Non-dangerous commands (reads, SET_LEDPARAM, SET_PROFILE, etc.) pass through
 /// without validation.
@@ -95,6 +99,75 @@ pub(crate) fn validate_dangerous_write(
         // SIMPLE commands have no layer byte; pass layer=0 for bounds check.
         monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
+    }
+
+    // SET_MACRO: bounds-check macro_index and chunk_page to prevent firmware
+    // flash corruption (macro_index > 49 corrupts userpic/calibration flash,
+    // chunk_page > 9 overflows the 514-byte staging buffer into adjacent RAM).
+    if cmd == commands.set_macro {
+        if msg.len() < 3 {
+            return Err(Status::invalid_argument(
+                "SET_MACRO payload too short: need at least 3 bytes",
+            ));
+        }
+
+        let macro_index = msg[1];
+        let chunk_page = msg[2];
+
+        if macro_index > MAX_MACRO_INDEX {
+            return Err(Status::invalid_argument(format!(
+                "SET_MACRO macro_index {} exceeds max {}",
+                macro_index, MAX_MACRO_INDEX
+            )));
+        }
+
+        if chunk_page > MAX_CHUNK_PAGE {
+            return Err(Status::invalid_argument(format!(
+                "SET_MACRO chunk_page {} exceeds max {}",
+                chunk_page, MAX_CHUNK_PAGE
+            )));
+        }
+    }
+
+    // SET_FN: bounds-check profile and key_index. Wire format is
+    // [cmd=0x10, fn_sys, profile, key_index, ...].
+    if cmd == cmd::SET_FN {
+        if msg.len() < 4 {
+            return Err(Status::invalid_argument(
+                "SET_FN payload too short: need at least 4 bytes",
+            ));
+        }
+
+        let profile = msg[2];
+        let key_index = msg[3] as u16;
+
+        if profile > MAX_PROFILE {
+            return Err(Status::invalid_argument(format!(
+                "SET_FN profile {} exceeds max {}",
+                profile, MAX_PROFILE
+            )));
+        }
+
+        // SET_FN does not carry a layer byte; pass layer=0 for bounds check.
+        monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+    }
+
+    // Magnetic SET commands: reject on non-magnetic devices where they produce
+    // undefined firmware behavior.
+    let magnetic_write_cmds: [u8; 5] = [
+        cmd::SET_MAGNETISM_REPORT,
+        cmd::SET_MAGNETISM_CAL,
+        cmd::SET_KEY_MAGNETISM_MODE,
+        cmd::SET_MAGNETISM_MAX_CAL,
+        cmd::SET_MULTI_MAGNETISM,
+    ];
+    if magnetic_write_cmds.contains(&cmd) && !definition.has_magnetism() {
+        return Err(Status::failed_precondition(format!(
+            "{} rejected: device {} does not support magnetic switches",
+            cmd::name(cmd),
+            definition.display_name
+        )));
     }
 
     Ok(())
