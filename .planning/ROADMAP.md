@@ -139,11 +139,11 @@ Plans:
   2. User programs a new macro (key sequence with delays) and it executes correctly when triggered
   3. For devices that support magnetic or Hall-effect features, the user reads switch calibration state via the web configurator
   4. For devices that support Rapid Trigger or equivalent features, the user configures per-key actuation/reset points and the keyboard responds to the new thresholds
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 06-01: TBD
-- [ ] 06-02: TBD
+- [ ] 06-01-PLAN.md — Extend validate_dangerous_write with SET_MACRO bounds, SET_FN bounds, and magnetic command gating, with unit tests
+- [ ] 06-02-PLAN.md — Hardware macro round-trip tests, magnetic wire format unit tests, and browser macro verification checkpoint
 
 ### Phase 7: CLI & Service Deployment
 **Goal**: Users can perform all keyboard operations from the command line and the bridge runs as a managed system service
