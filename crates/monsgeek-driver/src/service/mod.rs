@@ -1,7 +1,7 @@
 mod db_store;
 mod device_registry;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -32,19 +32,53 @@ use device_registry::{DevicePathRegistry, DeviceRegistration};
 
 const DEVICE_EVENTS_CHANNEL_SIZE: usize = 32;
 const MAX_PROFILE: u8 = 3;
+const MAX_FN_SYS: u8 = 1;
 const MAX_MACRO_INDEX: u8 = 49;
 const MAX_CHUNK_PAGE: u8 = 9;
+const MAGNETIC_WRITE_CMDS: [u8; 5] = [
+    cmd::SET_MAGNETISM_REPORT,
+    cmd::SET_MAGNETISM_CAL,
+    cmd::SET_KEY_MAGNETISM_MODE,
+    cmd::SET_MAGNETISM_MAX_CAL,
+    cmd::SET_MULTI_MAGNETISM,
+];
+
+fn is_magnetic_write_cmd(cmd_byte: u8) -> bool {
+    MAGNETIC_WRITE_CMDS.contains(&cmd_byte)
+}
+
+fn should_synthesize_empty_response(err: &Status, msg: &[u8]) -> bool {
+    let cmd_byte = msg.first().copied().unwrap_or(0);
+    err.code() == tonic::Code::FailedPrecondition && is_magnetic_write_cmd(cmd_byte)
+}
+
+fn max_profile_for_device(definition: &DeviceDefinition) -> u8 {
+    definition
+        .layer
+        .map(|layer_count| layer_count.saturating_sub(1))
+        .unwrap_or(MAX_PROFILE)
+}
+
+fn max_fn_sys_for_device(definition: &DeviceDefinition) -> u8 {
+    definition
+        .fn_sys_layer
+        .as_ref()
+        .map(|layer| layer.win.max(layer.mac).saturating_sub(1))
+        .unwrap_or(MAX_FN_SYS)
+}
 
 /// Validate dangerous write commands before forwarding to the transport layer.
 ///
 /// Validates the following commands against device bounds:
-/// - **SET_KEYMATRIX:** profile <= 3, key_index/layer within device bounds, min 7 bytes
-/// - **SET_KEYMATRIX_SIMPLE:** profile <= 3, key_index within device bounds, min 3 bytes
+/// - **SET_KEYMATRIX:** profile <= device max layer index, key_index/layer within device bounds, min 7 bytes
+/// - **SET_KEYMATRIX_SIMPLE:** profile <= device max layer index, key_index within device bounds, min 3 bytes
+/// - **SET_FN_SIMPLE:** profile <= device max layer index, key_index within device bounds, min 3 bytes
 /// - **SET_MACRO:** macro_index <= 49, chunk_page <= 9, min 3 bytes
-/// - **SET_FN:** profile <= 3, key_index within device bounds, min 4 bytes
+/// - **SET_FN:** fn_sys <= device fnSysLayer max index, profile <= device max layer index, key_index within device bounds, min 4 bytes
+/// - **SET_PROFILE:** profile <= device max layer index, min 2 bytes
 /// - **Magnetic SET commands:** rejected with `failed_precondition` if device lacks magnetic switches
 ///
-/// Non-dangerous commands (reads, SET_LEDPARAM, SET_PROFILE, etc.) pass through
+/// Non-dangerous commands (reads, SET_LEDPARAM, etc.) pass through
 /// without validation.
 pub(crate) fn validate_dangerous_write(
     definition: &DeviceDefinition,
@@ -55,7 +89,25 @@ pub(crate) fn validate_dangerous_write(
     }
 
     let cmd = msg[0];
+    let max_profile = max_profile_for_device(definition);
+    let max_fn_sys = max_fn_sys_for_device(definition);
     let commands = definition.commands();
+
+    if cmd == commands.set_profile {
+        if msg.len() < 2 {
+            return Err(Status::invalid_argument(
+                "SET_PROFILE payload too short: need at least 2 bytes",
+            ));
+        }
+
+        let profile = msg[1];
+        if profile > max_profile {
+            return Err(Status::invalid_argument(format!(
+                "SET_PROFILE profile {} exceeds max {}",
+                profile, max_profile
+            )));
+        }
+    }
 
     if cmd == commands.set_keymatrix {
         if msg.len() < 7 {
@@ -68,10 +120,10 @@ pub(crate) fn validate_dangerous_write(
         let key_index = msg[2] as u16;
         let layer = msg[6];
 
-        if profile > MAX_PROFILE {
+        if profile > max_profile {
             return Err(Status::invalid_argument(format!(
                 "SET_KEYMATRIX profile {} exceeds max {}",
-                profile, MAX_PROFILE
+                profile, max_profile
             )));
         }
 
@@ -89,10 +141,32 @@ pub(crate) fn validate_dangerous_write(
         let profile = msg[1];
         let key_index = msg[2] as u16;
 
-        if profile > MAX_PROFILE {
+        if profile > max_profile {
             return Err(Status::invalid_argument(format!(
                 "SET_KEYMATRIX_SIMPLE profile {} exceeds max {}",
-                profile, MAX_PROFILE
+                profile, max_profile
+            )));
+        }
+
+        // SIMPLE commands have no layer byte; pass layer=0 for bounds check.
+        monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+    }
+
+    if commands.set_fn_simple.is_some_and(|c| c == cmd) {
+        if msg.len() < 3 {
+            return Err(Status::invalid_argument(
+                "SET_FN_SIMPLE payload too short: need at least 3 bytes",
+            ));
+        }
+
+        let profile = msg[1];
+        let key_index = msg[2] as u16;
+
+        if profile > max_profile {
+            return Err(Status::invalid_argument(format!(
+                "SET_FN_SIMPLE profile {} exceeds max {}",
+                profile, max_profile
             )));
         }
 
@@ -138,13 +212,21 @@ pub(crate) fn validate_dangerous_write(
             ));
         }
 
+        let fn_sys = msg[1];
         let profile = msg[2];
         let key_index = msg[3] as u16;
 
-        if profile > MAX_PROFILE {
+        if fn_sys > max_fn_sys {
+            return Err(Status::invalid_argument(format!(
+                "SET_FN fn_sys {} exceeds max {}",
+                fn_sys, max_fn_sys
+            )));
+        }
+
+        if profile > max_profile {
             return Err(Status::invalid_argument(format!(
                 "SET_FN profile {} exceeds max {}",
-                profile, MAX_PROFILE
+                profile, max_profile
             )));
         }
 
@@ -155,14 +237,7 @@ pub(crate) fn validate_dangerous_write(
 
     // Magnetic SET commands: reject on non-magnetic devices where they produce
     // undefined firmware behavior.
-    let magnetic_write_cmds: [u8; 5] = [
-        cmd::SET_MAGNETISM_REPORT,
-        cmd::SET_MAGNETISM_CAL,
-        cmd::SET_KEY_MAGNETISM_MODE,
-        cmd::SET_MAGNETISM_MAX_CAL,
-        cmd::SET_MULTI_MAGNETISM,
-    ];
-    if magnetic_write_cmds.contains(&cmd) && !definition.has_magnetism() {
+    if is_magnetic_write_cmd(cmd) && !definition.has_magnetism() {
         return Err(Status::failed_precondition(format!(
             "{} rejected: device {} does not support magnetic switches",
             cmd::name(cmd),
@@ -223,6 +298,7 @@ pub struct DriverService {
     devices: Arc<Mutex<HashMap<String, ConnectedDevice>>>,
     path_registry: Arc<Mutex<DevicePathRegistry>>,
     opening_paths: Arc<Mutex<HashSet<String>>>,
+    synthetic_reads: Arc<Mutex<HashMap<String, VecDeque<Vec<u8>>>>>,
     device_tx: broadcast::Sender<DeviceList>,
     db: DbStore,
 }
@@ -243,6 +319,7 @@ impl DriverService {
             devices: Arc::new(Mutex::new(HashMap::new())),
             path_registry: Arc::new(Mutex::new(DevicePathRegistry::new())),
             opening_paths: Arc::new(Mutex::new(HashSet::new())),
+            synthetic_reads: Arc::new(Mutex::new(HashMap::new())),
             device_tx,
             db: DbStore::new(),
         }
@@ -272,6 +349,10 @@ impl DriverService {
         self.opening_paths
             .lock()
             .expect("opening set poisoned")
+            .clear();
+        self.synthetic_reads
+            .lock()
+            .expect("synthetic reads map poisoned")
             .clear();
     }
 
@@ -607,12 +688,39 @@ impl DriverService {
         self.find_connected_device(path).map(|d| d.handle)
     }
 
-    fn get_device_for_path(
-        &self,
-        path: &str,
-    ) -> Result<(TransportHandle, DeviceDefinition), Status> {
-        self.find_connected_device(path)
-            .map(|d| (d.handle, d.definition))
+    fn enqueue_synthetic_response(&self, path: &str, response: Vec<u8>) {
+        let mut synthetic_reads = self
+            .synthetic_reads
+            .lock()
+            .expect("synthetic reads map poisoned");
+        synthetic_reads
+            .entry(path.to_string())
+            .or_default()
+            .push_back(response);
+    }
+
+    fn enqueue_synthetic_empty_read(&self, path: &str) {
+        self.enqueue_synthetic_response(path, Vec::new());
+    }
+
+    fn enqueue_synthetic_empty_read_for_aliases(&self, requested_path: &str, canonical_path: &str) {
+        self.enqueue_synthetic_empty_read(requested_path);
+        if canonical_path != requested_path {
+            self.enqueue_synthetic_empty_read(canonical_path);
+        }
+    }
+
+    fn pop_synthetic_response(&self, path: &str) -> Option<Vec<u8>> {
+        let mut synthetic_reads = self
+            .synthetic_reads
+            .lock()
+            .expect("synthetic reads map poisoned");
+        let queue = synthetic_reads.get_mut(path)?;
+        let result = queue.pop_front();
+        if queue.is_empty() {
+            synthetic_reads.remove(path);
+        }
+        result
     }
 
     async fn send_command_rpc(
@@ -622,8 +730,33 @@ impl DriverService {
         checksum: ChecksumType,
     ) -> Result<(), Status> {
         self.open_device(path).await?;
-        let (handle, definition) = self.get_device_for_path(path)?;
-        validate_dangerous_write(&definition, &msg)?;
+        let connected = self.find_connected_device(path)?;
+        let handle = connected.handle;
+        let definition = connected.definition;
+        let canonical_path = connected.registration.path;
+
+        if let Err(err) = validate_dangerous_write(&definition, &msg) {
+            // Preserve send/read pairing for clients that always call read after send.
+            self.enqueue_synthetic_empty_read_for_aliases(path, &canonical_path);
+            if should_synthesize_empty_response(&err, &msg) {
+                tracing::info!(
+                    "send_command_rpc: synthesized empty response for blocked command path={} canonical_path={} cmd=0x{:02X}",
+                    path,
+                    canonical_path,
+                    msg.first().copied().unwrap_or(0),
+                );
+                return Ok(());
+            }
+            tracing::warn!(
+                "send_command_rpc: rejected command path={} canonical_path={} cmd=0x{:02X} err={}",
+                path,
+                canonical_path,
+                msg.first().copied().unwrap_or(0),
+                err
+            );
+            return Err(err);
+        }
+
         let msg = normalize_simple_keymatrix(&definition, msg);
         bridge_transport::send_command(handle, msg, checksum)
             .await
@@ -631,7 +764,21 @@ impl DriverService {
     }
 
     async fn read_response_rpc(&self, path: &str) -> Result<Vec<u8>, Status> {
+        if let Some(response) = self.pop_synthetic_response(path) {
+            return Ok(response);
+        }
+
         self.open_device(path).await?;
+
+        if let Ok(connected) = self.find_connected_device(path) {
+            let canonical_path = connected.registration.path;
+            if canonical_path != path {
+                if let Some(response) = self.pop_synthetic_response(&canonical_path) {
+                    return Ok(response);
+                }
+            }
+        }
+
         let handle = self.get_handle_for_path(path)?;
         bridge_transport::read_response(handle)
             .await
@@ -1014,6 +1161,7 @@ mod tests {
     use crate::pb::driver::driver_grpc_server::DriverGrpc;
     use crate::service::DriverService;
     use crate::service::device_registry::DevicePathRegistry;
+    use tonic::Status;
 
     #[test]
     fn synthetic_path_registry_roundtrip() {
@@ -1167,6 +1315,21 @@ mod tests {
             chip_family: None,
             command_overrides: None,
         }
+    }
+
+    fn make_test_definition_with_layer(layer: u8) -> monsgeek_protocol::DeviceDefinition {
+        let mut def = make_test_definition();
+        def.layer = Some(layer);
+        def
+    }
+
+    fn make_test_definition_with_fn_sys_layers(
+        win: u8,
+        mac: u8,
+    ) -> monsgeek_protocol::DeviceDefinition {
+        let mut def = make_test_definition();
+        def.fn_sys_layer = Some(monsgeek_protocol::FnSysLayer { win, mac });
+        def
     }
 
     fn make_set_keymatrix_msg(cmd: u8, profile: u8, key_index: u8, layer: u8) -> Vec<u8> {
@@ -1342,6 +1505,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_set_fn_simple_valid_passes() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_fn_simple.unwrap();
+        let msg = make_simple_msg(cmd, 0, 50, [0, 5, 0, 0]);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_fn_simple_profile_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_fn_simple.unwrap();
+        let msg = make_simple_msg(cmd, 4, 50, [0, 5, 0, 0]);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("profile"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_fn_simple_key_index_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_fn_simple.unwrap();
+        let msg = make_simple_msg(cmd, 0, 108, [0, 5, 0, 0]);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("bounds violation"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_fn_simple_short_buffer_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_fn_simple.unwrap();
+        let msg = vec![cmd, 0];
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("too short"),
+            "got: {}",
+            err.message()
+        );
+    }
+
     // ── Test helpers: SET_MACRO, SET_FN, magnetic device definitions ────
 
     fn make_test_definition_magnetic() -> monsgeek_protocol::DeviceDefinition {
@@ -1375,6 +1585,10 @@ mod tests {
         msg[2] = profile;
         msg[3] = key_index;
         msg
+    }
+
+    fn make_set_profile_msg(profile: u8) -> Vec<u8> {
+        vec![monsgeek_protocol::cmd::SET_PROFILE, profile]
     }
 
     // ── SET_MACRO tests ─────────────────────────────────────────────────
@@ -1486,6 +1700,90 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_set_fn_fn_sys_oob_rejected() {
+        let def = make_test_definition();
+        let mut msg = make_set_fn_msg(0, 50);
+        msg[1] = 2; // fn_sys > 1
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("fn_sys"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_fn_fn_sys_respects_single_layer_device_limit() {
+        let def = make_test_definition_with_fn_sys_layers(1, 1);
+        let mut msg = make_set_fn_msg(0, 50);
+        msg[1] = 1; // max is 0 when fnSysLayer is 1
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("fn_sys"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_fn_fn_sys_accepts_two_layer_device() {
+        let def = make_test_definition_with_fn_sys_layers(2, 2);
+        let mut msg = make_set_fn_msg(0, 50);
+        msg[1] = 1;
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_profile_valid_passes() {
+        let def = make_test_definition();
+        let msg = make_set_profile_msg(3);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_profile_oob_rejected() {
+        let def = make_test_definition();
+        let msg = make_set_profile_msg(4);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("profile"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_profile_short_buffer_rejected() {
+        let def = make_test_definition();
+        let msg = vec![monsgeek_protocol::cmd::SET_PROFILE];
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("too short"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_profile_respects_device_layer_limit() {
+        let def = make_test_definition_with_layer(2);
+        let msg = make_set_profile_msg(2); // max profile should be 1
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("exceeds max 1"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_profile_allows_five_layer_device_profile_four() {
+        let def = make_test_definition_with_layer(5);
+        let msg = make_set_profile_msg(4);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
     // ── Magnetic command gating tests ───────────────────────────────────
 
     #[test]
@@ -1550,6 +1848,27 @@ mod tests {
                 cmd_byte
             );
         }
+    }
+
+    #[test]
+    fn test_should_synthesize_empty_response_for_magnetic_failed_precondition() {
+        let status = Status::failed_precondition("unsupported magnetic command");
+        let msg = vec![monsgeek_protocol::cmd::SET_MAGNETISM_CAL];
+        assert!(super::should_synthesize_empty_response(&status, &msg));
+    }
+
+    #[test]
+    fn test_should_not_synthesize_for_non_magnetic_or_non_failed_precondition() {
+        let status = Status::failed_precondition("other");
+        let non_magnetic_msg = vec![monsgeek_protocol::cmd::SET_PROFILE];
+        assert!(!super::should_synthesize_empty_response(
+            &status,
+            &non_magnetic_msg
+        ));
+
+        let status = Status::invalid_argument("bad payload");
+        let magnetic_msg = vec![monsgeek_protocol::cmd::SET_MAGNETISM_CAL];
+        assert!(!super::should_synthesize_empty_response(&status, &magnetic_msg));
     }
 
     #[tokio::test]

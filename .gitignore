@@ -8,3 +8,5 @@
 /references/
 .codex
 __pycache__/
+.claude/
+.planning/
