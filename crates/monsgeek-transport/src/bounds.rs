@@ -132,6 +132,7 @@ mod tests {
             id: 1308,
             vid: 0x3151,
             pid: 0x4015,
+            runtime_pids: vec![],
             name: "test_device".to_string(),
             display_name: "Test".to_string(),
             company: None,
@@ -194,7 +195,11 @@ mod tests {
 
         assert!(
             content.contains(r#"ATTRS{idVendor}=="3151""#),
-            "udev rules must match MonsGeek VID 0x3151"
+            "udev rules must include MonsGeek/Akko VID 0x3151"
+        );
+        assert!(
+            content.contains(r#"ATTRS{idVendor}=="38ee""#),
+            "udev rules must include MonsGeek/Akko VID 0x38ee"
         );
         assert!(
             content.contains(r#"MODE="0666""#),

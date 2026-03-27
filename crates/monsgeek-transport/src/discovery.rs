@@ -77,7 +77,7 @@ pub fn find_devices_no_probe(
 
         let vid = descriptor.vendor_id();
         let pid = descriptor.product_id();
-        let matches = registry.find_by_vid_pid(vid, pid);
+        let matches = registry.find_by_runtime_vid_pid(vid, pid);
 
         if matches.is_empty() {
             continue;
@@ -95,6 +95,7 @@ pub fn find_devices_no_probe(
         });
     }
 
+    found.sort_by_key(|info| (info.bus, info.address, info.vid, info.pid));
     Ok(found)
 }
 
@@ -115,11 +116,25 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
 
     for vid in vendor_ids {
         for candidate in enumerate_usb_candidates(vid)? {
+            // Only probe runtime PIDs that exist in the registry. Scanning every
+            // same-VID interface (e.g. dongle/wired side endpoints) causes
+            // avoidable STALL recovery resets and can hide valid devices.
+            if !registry_supports_candidate(registry, candidate) {
+                log::debug!(
+                    "Probe skipped bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): not in registry",
+                    candidate.bus,
+                    candidate.address,
+                    candidate.vid,
+                    candidate.pid
+                );
+                continue;
+            }
+
             let session = match UsbSession::open_at(candidate.bus, candidate.address) {
                 Ok(session) => session,
                 Err(err) => {
-                    log::debug!(
-                        "Probe skipped bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                    log::warn!(
+                        "Probe open failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
                         candidate.bus,
                         candidate.address,
                         candidate.vid,
@@ -134,35 +149,29 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
             let usb_version = match controller.query_usb_version() {
                 Ok(info) => info,
                 Err(first_err) => {
-                    // STALL recovery: the yc3121 firmware often STALLs on the
-                    // first command after the kernel's IF2 descriptor probing.
-                    // Reset the USB device and retry once before giving up.
+                    // Discovery should be non-destructive. If firmware query
+                    // fails, fall back to unique runtime VID/PID alias mapping.
                     log::debug!(
-                        "Probe: first query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {} — attempting STALL recovery",
+                        "Probe query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
                         candidate.bus,
                         candidate.address,
                         candidate.vid,
                         candidate.pid,
                         first_err
                     );
-                    match controller
-                        .into_session()
-                        .reset_and_reopen()
-                        .and_then(|session| CommandController::new(session).query_usb_version())
-                    {
-                        Ok(info) => info,
-                        Err(retry_err) => {
-                            log::debug!(
-                                "Probe: STALL recovery also failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
-                                candidate.bus,
-                                candidate.address,
-                                candidate.vid,
-                                candidate.pid,
-                                retry_err
-                            );
-                            continue;
-                        }
+                    if let Some(definition) = unique_runtime_match(registry, candidate) {
+                        log::warn!(
+                            "Probe fallback: using runtime VID/PID alias for bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) -> device {} ({})",
+                            candidate.bus,
+                            candidate.address,
+                            candidate.vid,
+                            candidate.pid,
+                            definition.id,
+                            definition.display_name
+                        );
+                        found.push(device_info_from_definition(definition, candidate));
                     }
+                    continue;
                 }
             };
 
@@ -173,6 +182,19 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
                     candidate.address,
                     usb_version.device_id
                 );
+                if let Some(definition) = unique_runtime_match(registry, candidate) {
+                    log::warn!(
+                        "Probe fallback: unknown reported device ID {}, using runtime alias for bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) -> device {} ({})",
+                        usb_version.device_id,
+                        candidate.bus,
+                        candidate.address,
+                        candidate.vid,
+                        candidate.pid,
+                        definition.id,
+                        definition.display_name
+                    );
+                    found.push(device_info_from_definition(definition, candidate));
+                }
                 continue;
             };
 
@@ -180,7 +202,23 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
         }
     }
 
+    found.sort_by_key(|info| (info.bus, info.address, info.vid, info.pid));
     Ok(found)
+}
+
+fn registry_supports_candidate(registry: &DeviceRegistry, candidate: UsbCandidate) -> bool {
+    registry.supports_runtime_vid_pid(candidate.vid, candidate.pid)
+}
+
+fn unique_runtime_match(
+    registry: &DeviceRegistry,
+    candidate: UsbCandidate,
+) -> Option<&DeviceDefinition> {
+    let matches = registry.find_by_runtime_vid_pid(candidate.vid, candidate.pid);
+    if matches.len() == 1 {
+        return Some(matches[0]);
+    }
+    None
 }
 
 /// Probe a single runtime USB location and resolve it by firmware device ID.
@@ -224,10 +262,7 @@ pub fn probe_device_at(
     };
 
     // Avoid probing completely unknown VID/PID pairs.
-    if registry
-        .find_by_vid_pid(candidate.vid, candidate.pid)
-        .is_empty()
-    {
+    if !registry_supports_candidate(registry, candidate) {
         return Ok(None);
     }
 
@@ -237,13 +272,13 @@ pub fn probe_device_at(
         Ok(info) => info,
         Err(first_err) => {
             log::debug!(
-                "probe_device_at: first query failed bus {} addr {}: {} — attempting STALL recovery",
+                "probe_device_at: query failed bus {} addr {}: {}",
                 bus,
                 address,
                 first_err
             );
-            let session = controller.into_session().reset_and_reopen()?;
-            CommandController::new(session).query_usb_version()?
+            return Ok(unique_runtime_match(registry, candidate)
+                .map(|definition| device_info_from_definition(definition, candidate)));
         }
     };
     let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
@@ -253,7 +288,8 @@ pub fn probe_device_at(
             candidate.address,
             usb_version.device_id
         );
-        return Ok(None);
+        return Ok(unique_runtime_match(registry, candidate)
+            .map(|definition| device_info_from_definition(definition, candidate)));
     };
 
     Ok(Some(device_info_from_definition(definition, candidate)))
@@ -390,6 +426,13 @@ fn device_info_from_definition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn protocol_devices_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../monsgeek-protocol")
+            .join("devices")
+    }
 
     #[test]
     fn test_device_info_struct_fields() {
@@ -486,5 +529,45 @@ mod tests {
         assert_eq!(candidate.pid, 0x4015);
         assert_eq!(candidate.bus, 3);
         assert_eq!(candidate.address, 11);
+    }
+
+    #[test]
+    fn test_registry_supports_candidate_true_for_registered_pid() {
+        let registry = monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
+            .expect("device registry should load");
+        let candidate = UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4015,
+            bus: 0,
+            address: 0,
+        };
+        assert!(super::registry_supports_candidate(&registry, candidate));
+    }
+
+    #[test]
+    fn test_registry_supports_candidate_false_for_unregistered_pid() {
+        let registry = monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
+            .expect("device registry should load");
+        let candidate = UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4FFF,
+            bus: 0,
+            address: 0,
+        };
+        assert!(!super::registry_supports_candidate(&registry, candidate));
+    }
+
+    #[test]
+    fn test_unique_runtime_match_for_alias_pid() {
+        let registry = monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
+            .expect("device registry should load");
+        let candidate = UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4011,
+            bus: 0,
+            address: 0,
+        };
+        let matched = super::unique_runtime_match(&registry, candidate).expect("should match alias");
+        assert_eq!(matched.id, 1308);
     }
 }

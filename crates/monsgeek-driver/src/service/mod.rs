@@ -9,7 +9,11 @@ use std::time::Duration;
 
 use futures::Stream;
 use futures::stream::{self, StreamExt};
-use monsgeek_protocol::{ChecksumType, DeviceDefinition, DeviceRegistry, cmd};
+use monsgeek_protocol::{
+    ChecksumType, CommandDispatchPolicy, CommandPolicyError, CommandPolicyErrorCode,
+    CommandReadPolicy, DeviceDefinition, DeviceRegistry, evaluate_outbound_command,
+    normalize_outbound_command,
+};
 use monsgeek_transport::discovery::DeviceInfo;
 use monsgeek_transport::{
     TransportEvent, TransportHandle, TransportOptions, connect_at_with_options,
@@ -31,258 +35,28 @@ use db_store::DbStore;
 use device_registry::{DevicePathRegistry, DeviceRegistration};
 
 const DEVICE_EVENTS_CHANNEL_SIZE: usize = 32;
-const MAX_PROFILE: u8 = 3;
-const MAX_FN_SYS: u8 = 1;
-const MAX_MACRO_INDEX: u8 = 49;
-const MAX_CHUNK_PAGE: u8 = 9;
-const MAGNETIC_WRITE_CMDS: [u8; 5] = [
-    cmd::SET_MAGNETISM_REPORT,
-    cmd::SET_MAGNETISM_CAL,
-    cmd::SET_KEY_MAGNETISM_MODE,
-    cmd::SET_MAGNETISM_MAX_CAL,
-    cmd::SET_MULTI_MAGNETISM,
-];
-
-fn is_magnetic_write_cmd(cmd_byte: u8) -> bool {
-    MAGNETIC_WRITE_CMDS.contains(&cmd_byte)
+fn policy_error_to_status(error: &CommandPolicyError) -> Status {
+    match error.code {
+        CommandPolicyErrorCode::InvalidArgument => Status::invalid_argument(error.message.clone()),
+        CommandPolicyErrorCode::FailedPrecondition => {
+            Status::failed_precondition(error.message.clone())
+        }
+    }
 }
 
-fn should_synthesize_empty_response(err: &Status, msg: &[u8]) -> bool {
-    let cmd_byte = msg.first().copied().unwrap_or(0);
-    err.code() == tonic::Code::FailedPrecondition && is_magnetic_write_cmd(cmd_byte)
-}
-
-fn max_profile_for_device(definition: &DeviceDefinition) -> u8 {
-    definition
-        .layer
-        .map(|layer_count| layer_count.saturating_sub(1))
-        .unwrap_or(MAX_PROFILE)
-}
-
-fn max_fn_sys_for_device(definition: &DeviceDefinition) -> u8 {
-    definition
-        .fn_sys_layer
-        .as_ref()
-        .map(|layer| layer.win.max(layer.mac).saturating_sub(1))
-        .unwrap_or(MAX_FN_SYS)
-}
-
-/// Validate dangerous write commands before forwarding to the transport layer.
+/// Validate outbound command safety using protocol-owned policy.
 ///
-/// Validates the following commands against device bounds:
-/// - **SET_KEYMATRIX:** profile <= device max layer index, key_index/layer within device bounds, min 7 bytes
-/// - **SET_KEYMATRIX_SIMPLE:** profile <= device max layer index, key_index within device bounds, min 3 bytes
-/// - **SET_FN_SIMPLE:** profile <= device max layer index, key_index within device bounds, min 3 bytes
-/// - **SET_MACRO:** macro_index <= 49, chunk_page <= 9, min 3 bytes
-/// - **SET_FN:** fn_sys <= device fnSysLayer max index, profile <= device max layer index, key_index within device bounds, min 4 bytes
-/// - **SET_PROFILE:** profile <= device max layer index, min 2 bytes
-/// - **Magnetic SET commands:** rejected with `failed_precondition` if device lacks magnetic switches
-///
-/// Non-dangerous commands (reads, SET_LEDPARAM, etc.) pass through
-/// without validation.
+/// Semantic command rules (bounds, capability gates, compatibility behavior)
+/// are centralized in `monsgeek-protocol::evaluate_outbound_command`.
 pub(crate) fn validate_dangerous_write(
     definition: &DeviceDefinition,
     msg: &[u8],
 ) -> Result<(), Status> {
-    if msg.is_empty() {
-        return Ok(());
+    let decision = evaluate_outbound_command(definition, msg);
+    if let Some(error) = decision.error.as_ref() {
+        return Err(policy_error_to_status(error));
     }
-
-    let cmd = msg[0];
-    let max_profile = max_profile_for_device(definition);
-    let max_fn_sys = max_fn_sys_for_device(definition);
-    let commands = definition.commands();
-
-    if cmd == commands.set_profile {
-        if msg.len() < 2 {
-            return Err(Status::invalid_argument(
-                "SET_PROFILE payload too short: need at least 2 bytes",
-            ));
-        }
-
-        let profile = msg[1];
-        if profile > max_profile {
-            return Err(Status::invalid_argument(format!(
-                "SET_PROFILE profile {} exceeds max {}",
-                profile, max_profile
-            )));
-        }
-    }
-
-    if cmd == commands.set_keymatrix {
-        if msg.len() < 7 {
-            return Err(Status::invalid_argument(
-                "SET_KEYMATRIX payload too short: need at least 7 bytes",
-            ));
-        }
-
-        let profile = msg[1];
-        let key_index = msg[2] as u16;
-        let layer = msg[6];
-
-        if profile > max_profile {
-            return Err(Status::invalid_argument(format!(
-                "SET_KEYMATRIX profile {} exceeds max {}",
-                profile, max_profile
-            )));
-        }
-
-        monsgeek_transport::bounds::validate_write_request(definition, key_index, layer)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-    }
-
-    if commands.set_keymatrix_simple.is_some_and(|c| c == cmd) {
-        if msg.len() < 3 {
-            return Err(Status::invalid_argument(
-                "SET_KEYMATRIX_SIMPLE payload too short: need at least 3 bytes",
-            ));
-        }
-
-        let profile = msg[1];
-        let key_index = msg[2] as u16;
-
-        if profile > max_profile {
-            return Err(Status::invalid_argument(format!(
-                "SET_KEYMATRIX_SIMPLE profile {} exceeds max {}",
-                profile, max_profile
-            )));
-        }
-
-        // SIMPLE commands have no layer byte; pass layer=0 for bounds check.
-        monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-    }
-
-    if commands.set_fn_simple.is_some_and(|c| c == cmd) {
-        if msg.len() < 3 {
-            return Err(Status::invalid_argument(
-                "SET_FN_SIMPLE payload too short: need at least 3 bytes",
-            ));
-        }
-
-        let profile = msg[1];
-        let key_index = msg[2] as u16;
-
-        if profile > max_profile {
-            return Err(Status::invalid_argument(format!(
-                "SET_FN_SIMPLE profile {} exceeds max {}",
-                profile, max_profile
-            )));
-        }
-
-        // SIMPLE commands have no layer byte; pass layer=0 for bounds check.
-        monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-    }
-
-    // SET_MACRO: bounds-check macro_index and chunk_page to prevent firmware
-    // flash corruption (macro_index > 49 corrupts userpic/calibration flash,
-    // chunk_page > 9 overflows the 514-byte staging buffer into adjacent RAM).
-    if cmd == commands.set_macro {
-        if msg.len() < 3 {
-            return Err(Status::invalid_argument(
-                "SET_MACRO payload too short: need at least 3 bytes",
-            ));
-        }
-
-        let macro_index = msg[1];
-        let chunk_page = msg[2];
-
-        if macro_index > MAX_MACRO_INDEX {
-            return Err(Status::invalid_argument(format!(
-                "SET_MACRO macro_index {} exceeds max {}",
-                macro_index, MAX_MACRO_INDEX
-            )));
-        }
-
-        if chunk_page > MAX_CHUNK_PAGE {
-            return Err(Status::invalid_argument(format!(
-                "SET_MACRO chunk_page {} exceeds max {}",
-                chunk_page, MAX_CHUNK_PAGE
-            )));
-        }
-    }
-
-    // SET_FN: bounds-check profile and key_index. Wire format is
-    // [cmd=0x10, fn_sys, profile, key_index, ...].
-    if cmd == cmd::SET_FN {
-        if msg.len() < 4 {
-            return Err(Status::invalid_argument(
-                "SET_FN payload too short: need at least 4 bytes",
-            ));
-        }
-
-        let fn_sys = msg[1];
-        let profile = msg[2];
-        let key_index = msg[3] as u16;
-
-        if fn_sys > max_fn_sys {
-            return Err(Status::invalid_argument(format!(
-                "SET_FN fn_sys {} exceeds max {}",
-                fn_sys, max_fn_sys
-            )));
-        }
-
-        if profile > max_profile {
-            return Err(Status::invalid_argument(format!(
-                "SET_FN profile {} exceeds max {}",
-                profile, max_profile
-            )));
-        }
-
-        // SET_FN does not carry a layer byte; pass layer=0 for bounds check.
-        monsgeek_transport::bounds::validate_write_request(definition, key_index, 0)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-    }
-
-    // Magnetic SET commands: reject on non-magnetic devices where they produce
-    // undefined firmware behavior.
-    if is_magnetic_write_cmd(cmd) && !definition.has_magnetism() {
-        return Err(Status::failed_precondition(format!(
-            "{} rejected: device {} does not support magnetic switches",
-            cmd::name(cmd),
-            definition.display_name
-        )));
-    }
-
     Ok(())
-}
-
-/// Normalize SIMPLE keymatrix config bytes to fix the web app's reset bug.
-///
-/// The web app sends config bytes `[0, 0, keycode, 0]` when resetting a key to
-/// its default, but the YiChip firmware's SIMPLE handler reads config[1] as the
-/// keycode. This means config[1]=0 produces a dead key. This function detects
-/// the reset pattern and moves the keycode from config[2] to config[1].
-///
-/// Only applies to SET_KEYMATRIX_SIMPLE (0x13) and SET_FN_SIMPLE (0x15).
-/// Non-SIMPLE commands and non-reset configs pass through unchanged.
-pub(crate) fn normalize_simple_keymatrix(
-    definition: &DeviceDefinition,
-    mut msg: Vec<u8>,
-) -> Vec<u8> {
-    if msg.len() < 12 {
-        return msg;
-    }
-
-    let cmd = msg[0];
-    let commands = definition.commands();
-
-    let is_simple = commands.set_keymatrix_simple.is_some_and(|c| c == cmd)
-        || commands.set_fn_simple.is_some_and(|c| c == cmd);
-
-    if !is_simple {
-        return msg;
-    }
-
-    // Config bytes are at msg[8..12] in the 64-byte HID frame.
-    let config = &msg[8..12];
-    if config[0] == 0 && config[1] == 0 && config[2] != 0 && config[3] == 0 {
-        msg[9] = msg[10];
-        msg[10] = 0;
-    }
-
-    msg
 }
 
 #[derive(Clone)]
@@ -458,18 +232,22 @@ impl DriverService {
                 .collect()
         };
 
-        let connected_ids: std::collections::HashSet<i32> = {
+        let connected_locations: std::collections::HashSet<(u8, u8)> = {
             let devices = self.devices.lock().expect("devices map poisoned");
             devices
                 .values()
-                .map(|connected| connected.registration.device_id)
+                .map(|connected| (connected.registration.bus, connected.registration.address))
                 .collect()
         };
 
         // Probe USB for devices not yet connected.
         for registration in self.scan_registrations() {
-            if !connected_ids.contains(&registration.device_id) {
-                result.push(registration_to_djdev(registration));
+            if !connected_locations.contains(&(registration.bus, registration.address)) {
+                let canonical_pid = self
+                    .registry
+                    .find_by_id(registration.device_id)
+                    .map(|definition| definition.pid);
+                result.push(registration_to_djdev(registration, canonical_pid));
             }
         }
 
@@ -596,21 +374,34 @@ impl DriverService {
         });
     }
 
-    async fn open_device(&self, path: &str) -> Result<(), Status> {
-        if self.get_handle_for_path(path).is_ok() {
-            return Ok(());
+    async fn open_device(&self, path: &str) -> Result<ConnectedDevice, Status> {
+        if let Ok(connected) = self.find_connected_device(path) {
+            return Ok(connected);
         }
 
-        let registrations = self.scan_registrations();
-        let registration = resolve_registration_for_path(path, &registrations)
+        // Prefer runtime-cached registrations from watch/init/hot-plug first.
+        // This avoids re-probing every vendor-matched USB device on each
+        // first write/read, which can reset unrelated interfaces (e.g. 0x4011).
+        let cached_registrations = self
+            .path_registry
+            .lock()
+            .expect("path registry poisoned")
+            .all_registrations();
+        let registration = resolve_registration_for_path(path, &cached_registrations)
+            .or_else(|| {
+                // Fallback: probe USB only when we cannot resolve from cache.
+                let registrations = self.scan_registrations();
+                resolve_registration_for_path(path, &registrations)
+            })
             .ok_or_else(|| Status::not_found("device path could not be resolved"))?;
         let canonical_path = registration.path.clone();
 
         loop {
-            if self.get_handle_for_path(path).is_ok()
-                || self.get_handle_for_path(&canonical_path).is_ok()
-            {
-                return Ok(());
+            if let Ok(connected) = self.find_connected_device(path) {
+                return Ok(connected);
+            }
+            if let Ok(connected) = self.find_connected_device(&canonical_path) {
+                return Ok(connected);
             }
 
             let should_open = {
@@ -636,13 +427,11 @@ impl DriverService {
             .expect("opening set poisoned")
             .remove(&canonical_path);
 
-        if self.get_handle_for_path(path).is_ok()
-            || self.get_handle_for_path(&canonical_path).is_ok()
-        {
-            return Ok(());
+        if let Ok(connected) = self.find_connected_device(path) {
+            return Ok(connected);
         }
-
-        Err(Status::not_found("device path could not be resolved"))
+        self.find_connected_device(&canonical_path)
+            .map_err(|_| Status::not_found("device path could not be resolved"))
     }
 
     fn find_connected_device(&self, path: &str) -> Result<ConnectedDevice, Status> {
@@ -655,37 +444,52 @@ impl DriverService {
         let parsed_vid_pid = DevicePathRegistry::parse_vid_pid(path);
 
         if let Some((vid, pid)) = parsed_vid_pid {
-            if let Some(device) = devices.values().find(|device| {
+            let mut by_vid_pid = devices.values().filter(|device| {
                 device.registration.vid == vid
                     && device.registration.pid == pid
                     && hinted_id.is_none_or(|id| device.registration.device_id == id)
-            }) {
-                return Ok(device.clone());
+            });
+            if let Some(first) = by_vid_pid.next() {
+                if by_vid_pid.next().is_some() {
+                    return Err(Status::failed_precondition(
+                        "ambiguous device path: multiple connected devices match this VID/PID",
+                    ));
+                }
+                return Ok(first.clone());
             }
 
             if let Some(id) = hinted_id {
-                if let Some(device) = devices.values().find(|device| {
-                    device.registration.vid == vid && device.registration.device_id == id
-                }) {
-                    return Ok(device.clone());
+                let mut by_vid_and_id = devices
+                    .values()
+                    .filter(|device| {
+                        device.registration.vid == vid && device.registration.device_id == id
+                    });
+                if let Some(first) = by_vid_and_id.next() {
+                    if by_vid_and_id.next().is_some() {
+                        return Err(Status::failed_precondition(
+                            "ambiguous device path: multiple connected devices share this device ID",
+                        ));
+                    }
+                    return Ok(first.clone());
                 }
             }
         }
 
         if let Some(id) = hinted_id {
-            if let Some(device) = devices
+            let mut by_id = devices
                 .values()
-                .find(|device| device.registration.device_id == id)
-            {
-                return Ok(device.clone());
+                .filter(|device| device.registration.device_id == id);
+            if let Some(first) = by_id.next() {
+                if by_id.next().is_some() {
+                    return Err(Status::failed_precondition(
+                        "ambiguous device path: multiple connected devices share this device ID",
+                    ));
+                }
+                return Ok(first.clone());
             }
         }
 
         Err(Status::not_found("device not connected"))
-    }
-
-    fn get_handle_for_path(&self, path: &str) -> Result<TransportHandle, Status> {
-        self.find_connected_device(path).map(|d| d.handle)
     }
 
     fn enqueue_synthetic_response(&self, path: &str, response: Vec<u8>) {
@@ -729,57 +533,67 @@ impl DriverService {
         msg: Vec<u8>,
         checksum: ChecksumType,
     ) -> Result<(), Status> {
-        self.open_device(path).await?;
-        let connected = self.find_connected_device(path)?;
+        if path.trim().is_empty() {
+            return Err(Status::invalid_argument("device path is empty"));
+        }
+
+        let connected = self.open_device(path).await?;
         let handle = connected.handle;
         let definition = connected.definition;
         let canonical_path = connected.registration.path;
 
-        if let Err(err) = validate_dangerous_write(&definition, &msg) {
+        let decision = evaluate_outbound_command(&definition, &msg);
+        if decision.read_policy == CommandReadPolicy::SyntheticEmptyRead {
             // Preserve send/read pairing for clients that always call read after send.
             self.enqueue_synthetic_empty_read_for_aliases(path, &canonical_path);
-            if should_synthesize_empty_response(&err, &msg) {
-                tracing::info!(
-                    "send_command_rpc: synthesized empty response for blocked command path={} canonical_path={} cmd=0x{:02X}",
-                    path,
-                    canonical_path,
-                    msg.first().copied().unwrap_or(0),
-                );
-                return Ok(());
-            }
+        }
+
+        if let Some(error) = decision.error.as_ref() {
+            let status = policy_error_to_status(error);
             tracing::warn!(
                 "send_command_rpc: rejected command path={} canonical_path={} cmd=0x{:02X} err={}",
                 path,
                 canonical_path,
                 msg.first().copied().unwrap_or(0),
-                err
+                status
             );
-            return Err(err);
+            return Err(status);
         }
 
-        let msg = normalize_simple_keymatrix(&definition, msg);
+        if decision.dispatch == CommandDispatchPolicy::SkipTransport {
+            tracing::info!(
+                "send_command_rpc: policy skipped transport path={} canonical_path={} cmd=0x{:02X}",
+                path,
+                canonical_path,
+                msg.first().copied().unwrap_or(0),
+            );
+            return Ok(());
+        }
+
+        let msg = normalize_outbound_command(&definition, msg);
         bridge_transport::send_command(handle, msg, checksum)
             .await
             .map_err(Status::internal)
     }
 
     async fn read_response_rpc(&self, path: &str) -> Result<Vec<u8>, Status> {
+        if path.trim().is_empty() {
+            return Err(Status::invalid_argument("device path is empty"));
+        }
+
         if let Some(response) = self.pop_synthetic_response(path) {
             return Ok(response);
         }
 
-        self.open_device(path).await?;
-
-        if let Ok(connected) = self.find_connected_device(path) {
-            let canonical_path = connected.registration.path;
-            if canonical_path != path {
-                if let Some(response) = self.pop_synthetic_response(&canonical_path) {
-                    return Ok(response);
-                }
+        let connected = self.open_device(path).await?;
+        let canonical_path = connected.registration.path;
+        if canonical_path != path {
+            if let Some(response) = self.pop_synthetic_response(&canonical_path) {
+                return Ok(response);
             }
         }
 
-        let handle = self.get_handle_for_path(path)?;
+        let handle = connected.handle;
         bridge_transport::read_response(handle)
             .await
             .map_err(Status::internal)
@@ -846,7 +660,7 @@ fn device_to_djdev(device: &ConnectedDevice, is_online: bool) -> DjDev {
     DjDev {
         oneof_dev: Some(dj_dev::OneofDev::Dev(Device {
             dev_type: DeviceType::YzwKeyboard as i32,
-            is24: device.registration.pid == 0x4011,
+            is24: device.registration.pid != device.definition.pid,
             path: device.registration.path.clone(),
             id: device.registration.device_id,
             battery: 100,
@@ -857,11 +671,11 @@ fn device_to_djdev(device: &ConnectedDevice, is_online: bool) -> DjDev {
     }
 }
 
-fn registration_to_djdev(registration: DeviceRegistration) -> DjDev {
+fn registration_to_djdev(registration: DeviceRegistration, canonical_pid: Option<u16>) -> DjDev {
     DjDev {
         oneof_dev: Some(dj_dev::OneofDev::Dev(Device {
             dev_type: DeviceType::YzwKeyboard as i32,
-            is24: registration.pid == 0x4011,
+            is24: canonical_pid.is_some_and(|pid| registration.pid != pid),
             path: registration.path,
             id: registration.device_id,
             battery: 100,
@@ -873,6 +687,11 @@ fn registration_to_djdev(registration: DeviceRegistration) -> DjDev {
 }
 
 fn protocol_devices_dir() -> PathBuf {
+    // Deployment override for packaged installs.
+    if let Ok(path) = std::env::var("MONSGEEK_DEVICE_REGISTRY_DIR") {
+        return PathBuf::from(path);
+    }
+
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../monsgeek-protocol")
         .join("devices")
@@ -1161,7 +980,6 @@ mod tests {
     use crate::pb::driver::driver_grpc_server::DriverGrpc;
     use crate::service::DriverService;
     use crate::service::device_registry::DevicePathRegistry;
-    use tonic::Status;
 
     #[test]
     fn synthetic_path_registry_roundtrip() {
@@ -1296,6 +1114,7 @@ mod tests {
             id: 9999,
             vid: 0x3151,
             pid: 0x4015,
+            runtime_pids: vec![],
             name: "yc3121_test".to_string(),
             display_name: "Test".to_string(),
             company: None,
@@ -1304,7 +1123,7 @@ mod tests {
             key_count: Some(108),
             key_layout_name: None,
             layer: Some(4),
-            fn_sys_layer: None,
+            fn_sys_layer: Some(monsgeek_protocol::FnSysLayer { win: 2, mac: 2 }),
             magnetism: None,
             no_magnetic_switch: None,
             has_light_layout: None,
@@ -1435,7 +1254,7 @@ mod tests {
         let def = make_test_definition();
         let cmd = def.commands().set_keymatrix_simple.unwrap();
         let msg = make_simple_msg(cmd, 0, 5, [0, 0, 7, 0]);
-        let result = super::normalize_simple_keymatrix(&def, msg);
+        let result = monsgeek_protocol::normalize_outbound_command(&def, msg);
         assert_eq!(result[8], 0, "config[0] stays 0");
         assert_eq!(result[9], 7, "config[1] should now hold the keycode");
         assert_eq!(result[10], 0, "config[2] should be cleared");
@@ -1447,7 +1266,7 @@ mod tests {
         let def = make_test_definition();
         let cmd = def.commands().set_keymatrix_simple.unwrap();
         let msg = make_simple_msg(cmd, 0, 5, [0, 5, 0, 0]);
-        let result = super::normalize_simple_keymatrix(&def, msg);
+        let result = monsgeek_protocol::normalize_outbound_command(&def, msg);
         assert_eq!(result[8..12], [0, 5, 0, 0]);
     }
 
@@ -1457,7 +1276,7 @@ mod tests {
         let cmd = def.commands().set_keymatrix_simple.unwrap();
         // All zeros — not a reset pattern (config[2] == 0).
         let msg = make_simple_msg(cmd, 0, 5, [0, 0, 0, 0]);
-        let result = super::normalize_simple_keymatrix(&def, msg);
+        let result = monsgeek_protocol::normalize_outbound_command(&def, msg);
         assert_eq!(result[8..12], [0, 0, 0, 0]);
     }
 
@@ -1467,7 +1286,7 @@ mod tests {
         let cmd = def.commands().set_keymatrix_simple.unwrap();
         // config[0]=9 means macro type — not the reset pattern.
         let msg = make_simple_msg(cmd, 0, 5, [9, 0, 7, 0]);
-        let result = super::normalize_simple_keymatrix(&def, msg);
+        let result = monsgeek_protocol::normalize_outbound_command(&def, msg);
         assert_eq!(result[8..12], [9, 0, 7, 0]);
     }
 
@@ -1476,7 +1295,7 @@ mod tests {
         let def = make_test_definition();
         let cmd = def.commands().set_fn_simple.unwrap();
         let msg = make_simple_msg(cmd, 0, 5, [0, 0, 7, 0]);
-        let result = super::normalize_simple_keymatrix(&def, msg);
+        let result = monsgeek_protocol::normalize_outbound_command(&def, msg);
         assert_eq!(result[9], 7);
         assert_eq!(result[10], 0);
     }
@@ -1486,7 +1305,7 @@ mod tests {
         let def = make_test_definition();
         let cmd = def.commands().set_keymatrix; // 0x09 — NOT simple
         let msg = make_simple_msg(cmd, 0, 5, [0, 0, 7, 0]);
-        let result = super::normalize_simple_keymatrix(&def, msg);
+        let result = monsgeek_protocol::normalize_outbound_command(&def, msg);
         // Non-SIMPLE command should pass through without modification.
         assert_eq!(result[8..12], [0, 0, 7, 0]);
     }
@@ -1587,8 +1406,8 @@ mod tests {
         msg
     }
 
-    fn make_set_profile_msg(profile: u8) -> Vec<u8> {
-        vec![monsgeek_protocol::cmd::SET_PROFILE, profile]
+    fn make_set_profile_msg(definition: &monsgeek_protocol::DeviceDefinition, profile: u8) -> Vec<u8> {
+        vec![definition.commands().set_profile, profile]
     }
 
     // ── SET_MACRO tests ─────────────────────────────────────────────────
@@ -1737,14 +1556,14 @@ mod tests {
     #[test]
     fn test_set_profile_valid_passes() {
         let def = make_test_definition();
-        let msg = make_set_profile_msg(3);
+        let msg = make_set_profile_msg(&def, 3);
         assert!(super::validate_dangerous_write(&def, &msg).is_ok());
     }
 
     #[test]
     fn test_set_profile_oob_rejected() {
         let def = make_test_definition();
-        let msg = make_set_profile_msg(4);
+        let msg = make_set_profile_msg(&def, 4);
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
         assert!(
             err.message().contains("profile"),
@@ -1756,7 +1575,7 @@ mod tests {
     #[test]
     fn test_set_profile_short_buffer_rejected() {
         let def = make_test_definition();
-        let msg = vec![monsgeek_protocol::cmd::SET_PROFILE];
+        let msg = vec![def.commands().set_profile];
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
         assert!(
             err.message().contains("too short"),
@@ -1768,7 +1587,7 @@ mod tests {
     #[test]
     fn test_set_profile_respects_device_layer_limit() {
         let def = make_test_definition_with_layer(2);
-        let msg = make_set_profile_msg(2); // max profile should be 1
+        let msg = make_set_profile_msg(&def, 2); // max profile should be 1
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
         assert!(
             err.message().contains("exceeds max 1"),
@@ -1780,23 +1599,30 @@ mod tests {
     #[test]
     fn test_set_profile_allows_five_layer_device_profile_four() {
         let def = make_test_definition_with_layer(5);
-        let msg = make_set_profile_msg(4);
+        let msg = make_set_profile_msg(&def, 4);
         assert!(super::validate_dangerous_write(&def, &msg).is_ok());
     }
 
     // ── Magnetic command gating tests ───────────────────────────────────
 
     #[test]
-    fn test_magnetic_cmd_non_magnetic_device_rejected() {
+    fn test_magnetic_cmd_non_magnetic_device_compat_blocked() {
         let def = make_test_definition_non_magnetic();
         let mut msg = vec![0u8; 64];
         msg[0] = monsgeek_protocol::cmd::SET_MAGNETISM_CAL;
-        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("magnetic switches"),
-            "got: {}",
-            err.message()
+        // Compatibility behavior: blocked magnetic writes are treated as
+        // send-success and completed via synthetic empty read.
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+        let decision = monsgeek_protocol::evaluate_outbound_command(&def, &msg);
+        assert_eq!(
+            decision.dispatch,
+            monsgeek_protocol::CommandDispatchPolicy::SkipTransport
         );
+        assert_eq!(
+            decision.read_policy,
+            monsgeek_protocol::CommandReadPolicy::SyntheticEmptyRead
+        );
+        assert!(decision.error.is_none());
     }
 
     #[test]
@@ -1820,13 +1646,15 @@ mod tests {
         for &cmd_byte in &magnetic_cmds {
             let mut msg = vec![0u8; 64];
             msg[0] = cmd_byte;
-            let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-            assert!(
-                err.message().contains("magnetic switches"),
-                "cmd 0x{:02X} should be rejected on non-magnetic device, got: {}",
-                cmd_byte,
-                err.message()
+            let decision = monsgeek_protocol::evaluate_outbound_command(&def, &msg);
+            assert_eq!(
+                decision.dispatch,
+                monsgeek_protocol::CommandDispatchPolicy::SkipTransport,
+                "cmd 0x{:02X} should be transport-blocked on non-magnetic device",
+                cmd_byte
             );
+            assert_eq!(decision.read_policy, monsgeek_protocol::CommandReadPolicy::SyntheticEmptyRead);
+            assert!(decision.error.is_none());
         }
     }
 
@@ -1851,24 +1679,35 @@ mod tests {
     }
 
     #[test]
-    fn test_should_synthesize_empty_response_for_magnetic_failed_precondition() {
-        let status = Status::failed_precondition("unsupported magnetic command");
+    fn test_policy_synthesizes_for_blocked_magnetic_write() {
+        let def = make_test_definition_non_magnetic();
         let msg = vec![monsgeek_protocol::cmd::SET_MAGNETISM_CAL];
-        assert!(super::should_synthesize_empty_response(&status, &msg));
+        let decision = monsgeek_protocol::evaluate_outbound_command(&def, &msg);
+        assert_eq!(
+            decision.read_policy,
+            monsgeek_protocol::CommandReadPolicy::SyntheticEmptyRead
+        );
+        assert_eq!(
+            decision.dispatch,
+            monsgeek_protocol::CommandDispatchPolicy::SkipTransport
+        );
+        assert!(decision.error.is_none());
     }
 
     #[test]
-    fn test_should_not_synthesize_for_non_magnetic_or_non_failed_precondition() {
-        let status = Status::failed_precondition("other");
-        let non_magnetic_msg = vec![monsgeek_protocol::cmd::SET_PROFILE];
-        assert!(!super::should_synthesize_empty_response(
-            &status,
-            &non_magnetic_msg
-        ));
-
-        let status = Status::invalid_argument("bad payload");
-        let magnetic_msg = vec![monsgeek_protocol::cmd::SET_MAGNETISM_CAL];
-        assert!(!super::should_synthesize_empty_response(&status, &magnetic_msg));
+    fn test_policy_synthesizes_and_errors_for_invalid_write() {
+        let def = make_test_definition();
+        let msg = vec![def.commands().set_profile];
+        let decision = monsgeek_protocol::evaluate_outbound_command(&def, &msg);
+        assert_eq!(
+            decision.read_policy,
+            monsgeek_protocol::CommandReadPolicy::SyntheticEmptyRead
+        );
+        assert_eq!(
+            decision.dispatch,
+            monsgeek_protocol::CommandDispatchPolicy::SkipTransport
+        );
+        assert!(decision.error.is_some());
     }
 
     #[tokio::test]
@@ -1895,5 +1734,31 @@ mod tests {
         .unwrap()
         .into_inner();
         assert_eq!(got.value, b"v".to_vec());
+    }
+
+    #[tokio::test]
+    async fn send_command_rpc_rejects_empty_device_path() {
+        let service = DriverService::new();
+        let err = service
+            .send_command_rpc(
+                "",
+                vec![monsgeek_protocol::cmd::SET_PROFILE, 0],
+                monsgeek_protocol::ChecksumType::None,
+            )
+            .await
+            .expect_err("empty device path must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.message(), "device path is empty");
+    }
+
+    #[tokio::test]
+    async fn read_response_rpc_rejects_empty_device_path() {
+        let service = DriverService::new();
+        let err = service
+            .read_response_rpc("")
+            .await
+            .expect_err("empty device path must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.message(), "device path is empty");
     }
 }

@@ -7,6 +7,8 @@
 //! arrivals and departures.
 
 use std::os::unix::io::AsRawFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -82,12 +84,13 @@ pub(crate) fn spawn_transport_thread(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    running: Arc<AtomicBool>,
     input_processor: Option<InputProcessor>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("monsgeek-transport".into())
         .spawn(move || {
-            transport_loop(cmd_rx, event_tx, session, input_processor);
+            transport_loop(cmd_rx, event_tx, session, running, input_processor);
         })
         .expect("failed to spawn transport thread")
 }
@@ -99,6 +102,7 @@ fn transport_loop(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    running: Arc<AtomicBool>,
     mut input_processor: Option<InputProcessor>,
 ) {
     let mut controller = CommandController::new(session);
@@ -127,6 +131,7 @@ fn transport_loop(
         handle_command(req, &mut controller);
     }
 
+    running.store(false, Ordering::Relaxed);
     log::info!("Transport thread shutting down");
 }
 
@@ -185,6 +190,7 @@ fn pump_input(
 pub(crate) fn spawn_hotplug_thread(
     event_tx: Sender<TransportEvent>,
     vid: u16,
+    running: Arc<AtomicBool>,
 ) -> Option<std::thread::JoinHandle<()>> {
     let handle = std::thread::Builder::new()
         .name("monsgeek-hotplug".into())
@@ -219,6 +225,11 @@ pub(crate) fn spawn_hotplug_thread(
             log::info!("Hot-plug monitoring started via udev for VID 0x{}", vid_str);
 
             loop {
+                if !running.load(Ordering::Relaxed) {
+                    log::info!("Hot-plug monitoring stopped for VID 0x{}", vid_str);
+                    return;
+                }
+
                 let mut fds = [libc::pollfd {
                     fd,
                     events: libc::POLLIN,
@@ -413,6 +424,7 @@ mod tests {
             crossbeam_channel::Receiver<CommandRequest>,
             crossbeam_channel::Sender<TransportEvent>,
             crate::usb::UsbSession,
+            Arc<AtomicBool>,
             Option<InputProcessor>,
         ) -> std::thread::JoinHandle<()> = spawn_transport_thread;
     }

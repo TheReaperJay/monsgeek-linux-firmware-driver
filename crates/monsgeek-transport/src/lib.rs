@@ -39,6 +39,8 @@ pub use usb::{SessionMode as TransportMode, UsbSession, UsbVersionInfo};
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use monsgeek_protocol::{ChecksumType, DeviceDefinition};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::controller::CommandController;
 
@@ -275,9 +277,16 @@ fn spawn_transport(
             Some(InputProcessor::new(options.software_debounce_ms))
         }
     };
+    let running = Arc::new(AtomicBool::new(true));
 
-    thread::spawn_transport_thread(cmd_rx, event_tx.clone(), session, input_processor);
-    thread::spawn_hotplug_thread(event_tx, device.vid);
+    thread::spawn_transport_thread(
+        cmd_rx,
+        event_tx.clone(),
+        session,
+        Arc::clone(&running),
+        input_processor,
+    );
+    thread::spawn_hotplug_thread(event_tx, device.vid, running);
 
     Ok((TransportHandle { cmd_tx }, event_rx))
 }

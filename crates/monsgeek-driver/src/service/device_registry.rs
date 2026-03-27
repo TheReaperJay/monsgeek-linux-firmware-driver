@@ -72,6 +72,10 @@ impl DevicePathRegistry {
         self.by_path.get(path).cloned()
     }
 
+    pub fn all_registrations(&self) -> Vec<DeviceRegistration> {
+        self.by_path.values().cloned().collect()
+    }
+
     pub fn remove_by_bus_address(&mut self, bus: u8, address: u8) -> Option<DeviceRegistration> {
         let path = self.by_bus_address.remove(&(bus, address))?;
         self.by_path.remove(&path)
@@ -116,5 +120,14 @@ mod tests {
         assert!(registry.get_by_bus_address(3, 11).is_some());
         registry.clear();
         assert!(registry.get_by_bus_address(3, 11).is_none());
+    }
+
+    #[test]
+    fn all_registrations_returns_registered_entries() {
+        let mut registry = DevicePathRegistry::new();
+        registry.register(0x3151, 0x4015, 1308, 3, 11);
+        registry.register(0x3151, 0x4011, 1308, 3, 6);
+        let registrations = registry.all_registrations();
+        assert_eq!(registrations.len(), 2);
     }
 }

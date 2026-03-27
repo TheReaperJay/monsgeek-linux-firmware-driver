@@ -48,7 +48,7 @@ fn main() {
     let daemon_config = daemon::DaemonConfig {
         debounce_ms,
         device_filter,
-        device_name: "MonsGeek M5W (monsgeek-inputd)".to_string(),
+        device_name: None,
     };
 
     if let Err(e) = daemon::run_daemon(daemon_config) {

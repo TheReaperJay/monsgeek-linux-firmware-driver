@@ -1,9 +1,9 @@
-use evdev::uinput::VirtualDeviceBuilder;
 use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
 use monsgeek_transport::input::KeyAction;
 use monsgeek_transport::keymap::all_keycodes;
 
-/// Create a uinput virtual keyboard device with all keycodes the M5W can produce.
+/// Create a uinput virtual keyboard device with all keycodes currently mapped
+/// by the transport keymap table.
 /// The device has a distinct name so it is distinguishable from the physical keyboard.
 pub fn create_uinput_device(device_name: &str) -> std::io::Result<evdev::uinput::VirtualDevice> {
     let mut keys = AttributeSet::<KeyCode>::new();
@@ -11,7 +11,7 @@ pub fn create_uinput_device(device_name: &str) -> std::io::Result<evdev::uinput:
         keys.insert(KeyCode::new(keycode));
     }
 
-    VirtualDeviceBuilder::new()?
+    evdev::uinput::VirtualDevice::builder()?
         .name(device_name)
         .with_keys(&keys)?
         .build()

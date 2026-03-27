@@ -2,6 +2,7 @@
   "id": 1308,
   "vid": 12625,
   "pid": 16405,
+  "runtimePids": [16401],
   "name": "yc3121_m5w_soc",
   "displayName": "M5W",
   "company": "MonsGeek",

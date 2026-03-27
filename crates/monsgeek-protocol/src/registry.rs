@@ -77,6 +77,25 @@ impl DeviceRegistry {
             .unwrap_or_default()
     }
 
+    /// Find all devices matching a runtime VID/PID combination.
+    ///
+    /// Unlike [`find_by_vid_pid`], this also includes per-device `runtimePids`
+    /// aliases defined in registry JSON.
+    pub fn find_by_runtime_vid_pid(&self, vid: u16, pid: u16) -> Vec<&DeviceDefinition> {
+        self.devices_by_id
+            .values()
+            .filter(|device| device.vid == vid && device.supports_runtime_pid(pid))
+            .collect()
+    }
+
+    /// Check whether this VID/PID pair is supported as a runtime candidate.
+    ///
+    /// This includes both canonical device `pid` and any per-device
+    /// `runtimePids` aliases defined in registry JSON.
+    pub fn supports_runtime_vid_pid(&self, vid: u16, pid: u16) -> bool {
+        !self.find_by_runtime_vid_pid(vid, pid).is_empty()
+    }
+
     /// Number of devices in the registry.
     pub fn len(&self) -> usize {
         self.devices_by_id.len()
@@ -224,5 +243,21 @@ mod tests {
         assert!(result.is_err());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_supports_runtime_vid_pid_with_alias() {
+        let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
+        assert!(registry.supports_runtime_vid_pid(0x3151, 0x4015));
+        assert!(registry.supports_runtime_vid_pid(0x3151, 0x4011));
+        assert!(!registry.supports_runtime_vid_pid(0x3151, 0x4FFF));
+    }
+
+    #[test]
+    fn test_find_by_runtime_vid_pid_includes_aliases() {
+        let registry = DeviceRegistry::load_from_directory(&devices_dir()).unwrap();
+        let matches = registry.find_by_runtime_vid_pid(0x3151, 0x4011);
+        assert!(!matches.is_empty());
+        assert!(matches.iter().any(|device| device.id == 1308));
     }
 }

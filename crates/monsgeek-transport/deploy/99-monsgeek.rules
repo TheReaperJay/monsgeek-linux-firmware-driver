@@ -1,15 +1,9 @@
-# MonsGeek yc3121 keyboard udev rules for Linux
+# MonsGeek/Akko keyboard udev rules for Linux
 #
-# Install: sudo cp 99-monsgeek.rules /etc/udev/rules.d/
-# Reload: sudo udevadm control --reload-rules && sudo udevadm trigger
+# Generated from crates/monsgeek-protocol/devices/*.json
 #
-# Grants non-root USB access for MonsGeek keyboards.
-# VID/PID values come from crates/monsgeek-protocol/devices/*.json.
-#
-# With HID_QUIRK_IGNORE (see monsgeek-hid-usbhid.conf), usbhid does not
-# bind to this device, so no unbind rules are needed.
+# MODE="0666" is fallback for systems without seat ACLs.
+# TAG+="uaccess" grants per-user access on desktop Linux.
 
-# Grant non-root USB access for MonsGeek VID via libusb.
-# MODE="0666" is the fallback for systems without logind seats or the plugdev group.
-# TAG+="uaccess" grants access on systems with logind (most desktop Linux).
 SUBSYSTEM=="usb", ATTRS{idVendor}=="3151", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="38ee", MODE="0666", TAG+="uaccess"

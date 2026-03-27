@@ -103,6 +103,11 @@ pub struct DeviceDefinition {
     pub vid: u16,
     /// USB Product ID.
     pub pid: u16,
+    /// Additional runtime PIDs that may represent the same firmware device ID.
+    /// These are registry-defined aliases used for non-canonical wired/dongle
+    /// paths discovered in the field.
+    #[serde(default)]
+    pub runtime_pids: Vec<u16>,
     /// Internal device name (e.g., "yc3121_m5w_soc").
     pub name: String,
     /// Human-readable display name (e.g., "M5W").
@@ -148,6 +153,13 @@ pub struct DeviceDefinition {
 }
 
 impl DeviceDefinition {
+    /// Whether a runtime PID can belong to this device.
+    ///
+    /// `pid` always matches, and `runtime_pids` provides non-canonical aliases.
+    pub fn supports_runtime_pid(&self, pid: u16) -> bool {
+        self.pid == pid || self.runtime_pids.contains(&pid)
+    }
+
     /// Check if this device has magnetic (Hall effect) switches.
     ///
     /// Returns true if `magnetism` is explicitly true, or if `no_magnetic_switch`
@@ -250,6 +262,7 @@ mod tests {
         assert_eq!(device.id, 1308);
         assert_eq!(device.vid, 0x3151); // 12625
         assert_eq!(device.pid, 0x4015); // 16405
+        assert!(device.runtime_pids.contains(&0x4011));
         assert_eq!(device.name, "yc3121_m5w_soc");
         assert_eq!(device.display_name, "M5W");
         assert_eq!(device.company, Some("MonsGeek".to_string()));
@@ -333,6 +346,23 @@ mod tests {
         assert_eq!(device.led_matrix, None);
         assert_eq!(device.chip_family, None);
         assert!(device.command_overrides.is_none());
+        assert!(device.runtime_pids.is_empty());
+    }
+
+    #[test]
+    fn test_supports_runtime_pid_accepts_canonical_and_aliases() {
+        let json = r#"{
+            "id": 1,
+            "vid": 12625,
+            "pid": 16405,
+            "runtimePids": [16401],
+            "name": "test",
+            "displayName": "Test"
+        }"#;
+        let device: DeviceDefinition = serde_json::from_str(json).unwrap();
+        assert!(device.supports_runtime_pid(16405));
+        assert!(device.supports_runtime_pid(16401));
+        assert!(!device.supports_runtime_pid(16437));
     }
 
     #[test]
