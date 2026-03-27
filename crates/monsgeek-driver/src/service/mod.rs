@@ -1342,6 +1342,216 @@ mod tests {
         );
     }
 
+    // ── Test helpers: SET_MACRO, SET_FN, magnetic device definitions ────
+
+    fn make_test_definition_magnetic() -> monsgeek_protocol::DeviceDefinition {
+        monsgeek_protocol::DeviceDefinition {
+            magnetism: Some(true),
+            no_magnetic_switch: None,
+            ..make_test_definition()
+        }
+    }
+
+    fn make_test_definition_non_magnetic() -> monsgeek_protocol::DeviceDefinition {
+        monsgeek_protocol::DeviceDefinition {
+            magnetism: None,
+            no_magnetic_switch: Some(true),
+            ..make_test_definition()
+        }
+    }
+
+    fn make_set_macro_msg(cmd: u8, macro_index: u8, chunk_page: u8) -> Vec<u8> {
+        let mut msg = vec![0u8; 64];
+        msg[0] = cmd;
+        msg[1] = macro_index;
+        msg[2] = chunk_page;
+        msg
+    }
+
+    fn make_set_fn_msg(profile: u8, key_index: u8) -> Vec<u8> {
+        let mut msg = vec![0u8; 64];
+        msg[0] = monsgeek_protocol::cmd::SET_FN;
+        msg[1] = 0; // fn_sys
+        msg[2] = profile;
+        msg[3] = key_index;
+        msg
+    }
+
+    // ── SET_MACRO tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_macro_valid_passes() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_macro;
+        let msg = make_set_macro_msg(cmd, 0, 0);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_macro_boundary_valid() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_macro;
+        let msg = make_set_macro_msg(cmd, 49, 9);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_macro_index_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_macro;
+        let msg = make_set_macro_msg(cmd, 50, 0);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("macro_index"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_macro_chunk_page_oob_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_macro;
+        let msg = make_set_macro_msg(cmd, 0, 10);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("chunk_page"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_macro_short_buffer_rejected() {
+        let def = make_test_definition();
+        let cmd = def.commands().set_macro;
+        let msg = vec![cmd, 0];
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("too short"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    // ── SET_FN tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_set_fn_valid_passes() {
+        let def = make_test_definition();
+        let msg = make_set_fn_msg(0, 50);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_fn_boundary_valid() {
+        let def = make_test_definition();
+        let msg = make_set_fn_msg(3, 107);
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_set_fn_profile_oob_rejected() {
+        let def = make_test_definition();
+        let msg = make_set_fn_msg(4, 50);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("profile"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_fn_key_index_oob_rejected() {
+        let def = make_test_definition();
+        let msg = make_set_fn_msg(0, 108);
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("bounds violation"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_set_fn_short_buffer_rejected() {
+        let def = make_test_definition();
+        let msg = vec![monsgeek_protocol::cmd::SET_FN, 0, 0];
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("too short"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    // ── Magnetic command gating tests ───────────────────────────────────
+
+    #[test]
+    fn test_magnetic_cmd_non_magnetic_device_rejected() {
+        let def = make_test_definition_non_magnetic();
+        let mut msg = vec![0u8; 64];
+        msg[0] = monsgeek_protocol::cmd::SET_MAGNETISM_CAL;
+        let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+        assert!(
+            err.message().contains("magnetic switches"),
+            "got: {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn test_magnetic_cmd_magnetic_device_passes() {
+        let def = make_test_definition_magnetic();
+        let mut msg = vec![0u8; 64];
+        msg[0] = monsgeek_protocol::cmd::SET_MAGNETISM_CAL;
+        assert!(super::validate_dangerous_write(&def, &msg).is_ok());
+    }
+
+    #[test]
+    fn test_all_magnetic_cmds_gated() {
+        let def = make_test_definition_non_magnetic();
+        let magnetic_cmds = [
+            monsgeek_protocol::cmd::SET_MAGNETISM_REPORT,
+            monsgeek_protocol::cmd::SET_MAGNETISM_CAL,
+            monsgeek_protocol::cmd::SET_KEY_MAGNETISM_MODE,
+            monsgeek_protocol::cmd::SET_MAGNETISM_MAX_CAL,
+            monsgeek_protocol::cmd::SET_MULTI_MAGNETISM,
+        ];
+        for &cmd_byte in &magnetic_cmds {
+            let mut msg = vec![0u8; 64];
+            msg[0] = cmd_byte;
+            let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
+            assert!(
+                err.message().contains("magnetic switches"),
+                "cmd 0x{:02X} should be rejected on non-magnetic device, got: {}",
+                cmd_byte,
+                err.message()
+            );
+        }
+    }
+
+    #[test]
+    fn test_magnetic_read_cmds_not_gated() {
+        let def = make_test_definition_non_magnetic();
+        // GET commands should pass through even on non-magnetic devices
+        // (they are read-only queries, not dangerous writes).
+        let read_cmds = [
+            monsgeek_protocol::cmd::GET_MULTI_MAGNETISM,
+            monsgeek_protocol::cmd::GET_KEY_MAGNETISM_MODE,
+        ];
+        for &cmd_byte in &read_cmds {
+            let mut msg = vec![0u8; 64];
+            msg[0] = cmd_byte;
+            assert!(
+                super::validate_dangerous_write(&def, &msg).is_ok(),
+                "GET cmd 0x{:02X} should pass through on non-magnetic device",
+                cmd_byte
+            );
+        }
+    }
+
     #[tokio::test]
     async fn db_insert_get_roundtrip() {
         let service = DriverService::new();
