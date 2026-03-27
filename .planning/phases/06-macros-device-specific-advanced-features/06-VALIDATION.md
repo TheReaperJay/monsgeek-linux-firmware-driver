@@ -41,12 +41,12 @@ created: 2026-03-27
 | 06-01-01 | 01 | 1 | MACR-02 | unit | `cargo test -p monsgeek-driver validate_dangerous_write_set_macro` | ❌ W0 | ⬜ pending |
 | 06-01-02 | 01 | 1 | N/A | unit | `cargo test -p monsgeek-driver validate_dangerous_write_set_fn` | ❌ W0 | ⬜ pending |
 | 06-01-03 | 01 | 1 | N/A | unit | `cargo test -p monsgeek-driver validate_dangerous_write_magnetic` | ❌ W0 | ⬜ pending |
-| 06-02-01 | 02 | 1 | MACR-01 | hardware | `cargo test -p monsgeek-transport --features hardware -- --ignored test_get_macro --nocapture` | ❌ W0 | ⬜ pending |
-| 06-02-02 | 02 | 1 | MACR-02 | hardware (dangerous) | `MONSGEEK_ENABLE_DANGEROUS_WRITES=1 cargo test -p monsgeek-transport --features "hardware dangerous-hardware-writes" -- --ignored test_set_get_macro --nocapture` | ❌ W0 | ⬜ pending |
-| 06-02-03 | 02 | 1 | MAG-01 | unit | `cargo test -p monsgeek-transport test_magnetism_calibration_parse` | ❌ W0 | ⬜ pending |
-| 06-02-04 | 02 | 1 | MAG-02 | unit | `cargo test -p monsgeek-transport test_magnetism_calibration_commands` | ❌ W0 | ⬜ pending |
-| 06-02-05 | 02 | 1 | MAG-03 | unit | `cargo test -p monsgeek-transport test_magnetism_rt_read` | ❌ W0 | ⬜ pending |
-| 06-02-06 | 02 | 1 | MAG-04 | unit | `cargo test -p monsgeek-transport test_magnetism_set_actuation` | ❌ W0 | ⬜ pending |
+| 06-02-01 | 02 | 2 | MACR-01 | hardware | `cargo test -p monsgeek-transport --features hardware -- --ignored test_get_macro --nocapture` | ❌ W0 | ⬜ pending |
+| 06-02-02 | 02 | 2 | MACR-02 | hardware (dangerous) | `MONSGEEK_ENABLE_DANGEROUS_WRITES=1 cargo test -p monsgeek-transport --features "hardware dangerous-hardware-writes" -- --ignored test_set_get_macro --nocapture` | ❌ W0 | ⬜ pending |
+| 06-02-03 | 02 | 2 | MAG-01, MAG-02 | unit | `cargo test -p monsgeek-transport --test magnetism test_magnetism_calibration_start_stop_format` | ❌ W0 | ⬜ pending |
+| 06-02-04 | 02 | 2 | MAG-01, MAG-03 | unit | `cargo test -p monsgeek-transport --test magnetism test_magnetism_set_multi_header_format` | ❌ W0 | ⬜ pending |
+| 06-02-05 | 02 | 2 | MAG-01, MAG-03 | unit | `cargo test -p monsgeek-transport --test magnetism test_magnetism_per_key_travel_parsing` | ❌ W0 | ⬜ pending |
+| 06-02-06 | 02 | 2 | MAG-04 | unit | `cargo test -p monsgeek-transport --test magnetism test_magnetism_key_mode_format` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -56,7 +56,7 @@ created: 2026-03-27
 
 - [ ] `crates/monsgeek-driver/src/service/mod.rs` — SET_MACRO, SET_FN, magnetic command bounds validation unit tests in test module
 - [ ] `crates/monsgeek-transport/tests/hardware.rs` — macro GET/SET round-trip hardware test stubs (MACR-01, MACR-02)
-- [ ] Magnetic wire format unit tests — location TBD (transport or protocol crate)
+- [ ] `crates/monsgeek-transport/tests/magnetism.rs` — magnetic wire format unit tests (MAG-01 through MAG-04)
 
 *Existing test infrastructure (cargo test, feature flags) covers framework needs.*
 
