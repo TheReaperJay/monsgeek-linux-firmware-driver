@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 6 context gathered
-last_updated: "2026-03-27T06:43:22.688Z"
+stopped_at: Completed 06-01-PLAN.md
+last_updated: "2026-03-27T06:50:01.358Z"
 progress:
   total_phases: 9
   completed_phases: 6
   total_plans: 17
-  completed_plans: 15
+  completed_plans: 16
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md),
 ## Current Position
 
 Phase: 06 (macros-device-specific-advanced-features) — EXECUTING
-Plan: 1 of 2
+Plan: 2 of 2
 
 ## What Is Verified
 
@@ -99,6 +99,9 @@ Residual follow-up after Phase 2:
 - Initial connect uses exact bus/address; reconnect uses VID/PID since address changes after replug
 - 10 consecutive read errors trigger disconnect detection for ambiguous kernel error codes
 - All daemon connection errors retry with 2s settle instead of exiting
+- CommandSchemaMap set_macro entry uses VariableWithMax(63) -- correct for bridge transport passthrough
+- Magnetic command gating uses Status::failed_precondition to distinguish capability from bounds errors
+- SET_FN passes layer=0 to validate_write_request since wire format lacks a layer byte
 
 ## Pending Todos
 
@@ -121,5 +124,5 @@ Residual follow-up after Phase 2:
 ## Session Continuity
 
 Last major checkpoint: 2026-03-27
-Stopped at: Phase 6 context gathered
-Next recommended action: Resume remaining phases (Phase 4, 6, 7, or 8)
+Stopped at: Completed 06-01-PLAN.md
+Next recommended action: Execute Phase 06 Plan 02 (hardware macro verification)

@@ -48,14 +48,14 @@ Requirements for the current milestone. These focus on a working Linux transport
 ### Macros
 
 - [ ] **MACR-01**: User can read existing macros via GET_MACRO
-- [ ] **MACR-02**: User can program macros via SET_MACRO
+- [x] **MACR-02**: User can program macros via SET_MACRO
 
 ### Device-Specific Advanced Features
 
-- [ ] **MAG-01**: For device profiles that support them, user can read advanced switch calibration state
-- [ ] **MAG-02**: For device profiles that support them, user can calibrate advanced switch behavior
-- [ ] **MAG-03**: For device profiles that support them, user can read per-key rapid-trigger style configuration
-- [ ] **MAG-04**: For device profiles that support them, user can set per-key actuation/reset points
+- [x] **MAG-01**: For device profiles that support them, user can read advanced switch calibration state
+- [x] **MAG-02**: For device profiles that support them, user can calibrate advanced switch behavior
+- [x] **MAG-03**: For device profiles that support them, user can read per-key rapid-trigger style configuration
+- [x] **MAG-04**: For device profiles that support them, user can set per-key actuation/reset points
 
 ### Userspace Input Daemon
 
@@ -134,11 +134,11 @@ Deferred until the core wired bridge is stable.
 | TUNE-01 | Phase 5 | Complete |
 | TUNE-02 | Phase 5 | Complete |
 | MACR-01 | Phase 6 | Pending |
-| MACR-02 | Phase 6 | Pending |
-| MAG-01 | Phase 6 | Pending |
-| MAG-02 | Phase 6 | Pending |
-| MAG-03 | Phase 6 | Pending |
-| MAG-04 | Phase 6 | Pending |
+| MACR-02 | Phase 6 | Complete |
+| MAG-01 | Phase 6 | Complete |
+| MAG-02 | Phase 6 | Complete |
+| MAG-03 | Phase 6 | Complete |
+| MAG-04 | Phase 6 | Complete |
 | INPUT-01 | Phase 5.1 | Complete |
 | INPUT-02 | Phase 5.1 | Complete |
 | INPUT-03 | Phase 5.1 | Complete |
