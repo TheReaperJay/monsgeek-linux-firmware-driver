@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FirmwareManifest {
@@ -49,4 +50,29 @@ impl FirmwareManifest {
             .with_context(|| format!("failed to read manifest file at {}", path.display()))?;
         Self::from_json_str(&raw)
     }
+
+    pub fn validate_compatibility_fields(&self) -> std::result::Result<(), ManifestValidationError> {
+        if self.compatibility.expected_device_id.is_none() {
+            return Err(ManifestValidationError::MissingExpectedDeviceId);
+        }
+
+        let Some(model_slug) = self.compatibility.expected_model_slug.as_ref() else {
+            return Err(ManifestValidationError::MissingExpectedModelSlug);
+        };
+        if model_slug.trim().is_empty() {
+            return Err(ManifestValidationError::EmptyExpectedModelSlug);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ManifestValidationError {
+    #[error("manifest compatibility.expected_device_id is required")]
+    MissingExpectedDeviceId,
+    #[error("manifest compatibility.expected_model_slug is required")]
+    MissingExpectedModelSlug,
+    #[error("manifest compatibility.expected_model_slug cannot be empty")]
+    EmptyExpectedModelSlug,
 }

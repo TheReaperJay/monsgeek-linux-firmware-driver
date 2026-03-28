@@ -8,5 +8,7 @@ pub use engine::{
     TRANSFER_START_MARKER, lower_24_bits, padded_checksum_64,
 };
 pub use manifest::{CompatibilityCheck, FirmwareManifest, FirmwareSource, FirmwareTarget};
-pub use preflight::{ManifestSummary, PreflightDecision, PreflightRequest};
+pub use preflight::{
+    ManifestSummary, PreflightDecision, PreflightRequest, REQUIRED_TYPED_PHRASE, run_preflight,
+};
 pub use progress::{ProgressEvent, ProgressPhase};
