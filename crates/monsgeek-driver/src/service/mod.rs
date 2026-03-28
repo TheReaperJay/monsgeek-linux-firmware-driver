@@ -1,5 +1,6 @@
 mod db_store;
 mod device_registry;
+mod firmware_update;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -33,6 +34,7 @@ use crate::pb::driver::{
 };
 use db_store::DbStore;
 use device_registry::{DevicePathRegistry, DeviceRegistration};
+use firmware_update::BridgeTarget;
 
 const DEVICE_EVENTS_CHANNEL_SIZE: usize = 32;
 fn policy_error_to_status(error: &CommandPolicyError) -> Status {
@@ -75,10 +77,20 @@ pub struct DriverService {
     synthetic_reads: Arc<Mutex<HashMap<String, VecDeque<Vec<u8>>>>>,
     device_tx: broadcast::Sender<DeviceList>,
     db: DbStore,
+    ota_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DriverFlags {
+    pub ota_enabled: bool,
 }
 
 impl DriverService {
     pub fn new() -> Self {
+        Self::new_with_flags(DriverFlags::default())
+    }
+
+    pub fn new_with_flags(flags: DriverFlags) -> Self {
         let registry = match DeviceRegistry::load_from_directory(&protocol_devices_dir()) {
             Ok(r) => r,
             Err(err) => {
@@ -96,7 +108,12 @@ impl DriverService {
             synthetic_reads: Arc::new(Mutex::new(HashMap::new())),
             device_tx,
             db: DbStore::new(),
+            ota_enabled: flags.ota_enabled,
         }
+    }
+
+    pub fn ota_enabled(&self) -> bool {
+        self.ota_enabled
     }
 
     /// Gracefully stop all active transport sessions and clear runtime state.
@@ -873,9 +890,25 @@ impl DriverGrpc for DriverService {
 
     async fn upgrade_otagatt(
         &self,
-        _request: Request<OtaUpgrade>,
+        request: Request<OtaUpgrade>,
     ) -> Result<Response<Self::upgradeOTAGATTStream>, Status> {
-        Ok(Response::new(Box::pin(stream::empty())))
+        if !self.ota_enabled {
+            return Err(Status::failed_precondition(
+                "OTA disabled; start monsgeek-driver with --enable-ota",
+            ));
+        }
+
+        let req = request.into_inner();
+        let target = BridgeTarget {
+            device_id: parse_id_hint(&req.dev_path)
+                .and_then(|id| u32::try_from(id).ok())
+                .unwrap_or(1308),
+            model_slug: "monsgeek-m5w".to_string(),
+            device_path: req.dev_path.clone(),
+        };
+        let updates = firmware_update::stream_progress(req, target);
+        let stream = stream::iter(updates.into_iter().map(Ok));
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn mute_microphone(

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 monsgeek-protocol = { path = "../monsgeek-protocol" }
 monsgeek-transport = { path = "../monsgeek-transport" }
+monsgeek-firmware = { path = "../monsgeek-firmware" }
 tonic = "0.12"
 tonic-web = "0.12"
 prost = "0.13"
@@ -17,6 +18,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crossbeam-channel = "0.5"
 libc = "0.2"
+anyhow = "1"
 
 [build-dependencies]
 tonic-build = "0.12"

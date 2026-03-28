@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use monsgeek_driver::DriverService;
+use monsgeek_driver::{DriverFlags, DriverService};
 use monsgeek_driver::pb::driver::driver_grpc_server::DriverGrpcServer;
 use tonic::transport::Server;
 use tower_http::cors::{Any, CorsLayer};
@@ -15,18 +15,29 @@ type AnyError = Box<dyn Error>;
 
 #[tokio::main]
 async fn main() -> Result<(), AnyError> {
-    if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("monsgeek-driver v{}", env!("CARGO_PKG_VERSION"));
         println!("Starts local gRPC-Web bridge on 127.0.0.1:3814");
+        println!("Flags:");
+        println!("  --enable-ota    Enable high-risk OTA RPC endpoint (disabled by default)");
         return Ok(());
     }
+    let enable_ota = args.iter().any(|arg| arg == "--enable-ota");
 
     tracing_subscriber::fmt().with_env_filter("info").init();
 
     let addr: SocketAddr = "127.0.0.1:3814".parse()?;
-    let service = DriverService::new();
+    let service = DriverService::new_with_flags(DriverFlags {
+        ota_enabled: enable_ota,
+    });
 
     tracing::info!("Starting monsgeek-driver on {}", addr);
+    if enable_ota {
+        tracing::warn!("OTA bridge endpoint is ENABLED (--enable-ota)");
+    } else {
+        tracing::info!("OTA bridge endpoint is disabled (default)");
+    }
 
     serve_with_takeover(service, addr).await
 }
