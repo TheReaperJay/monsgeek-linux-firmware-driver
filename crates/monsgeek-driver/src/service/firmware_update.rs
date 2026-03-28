@@ -11,6 +11,7 @@ use crate::pb::driver::{OtaUpgrade, Progress};
 
 const SCENARIO_BOOT_TIMEOUT_FAIL: &[u8] = b"BOOT_TIMEOUT_FAIL";
 const SCENARIO_INTEGRITY_FAIL: &[u8] = b"INTEGRITY_FAIL";
+const SCENARIO_INCOMPLETE_TRANSFER: &[u8] = b"INCOMPLETE_TRANSFER";
 const SCENARIO_POST_VERIFY_FAIL: &[u8] = b"POST_VERIFY_FAIL";
 
 #[derive(Debug, Clone)]
@@ -99,12 +100,12 @@ pub fn stream_progress(request: OtaUpgrade, target: BridgeTarget) -> Vec<Progres
                     continue;
                 }
 
-                let failure = if message.contains("integrity mismatch") {
-                    format!(
-                        "integrity mismatch: {message}; device may still be in bootloader mode; re-run with a known-good image; use physical recovery path if device no longer enumerates"
-                    )
+                let failure = if message.contains("integrity mismatch")
+                    || message.contains("incomplete transfer")
+                {
+                    format!("{}: {message}; {}", classify_integrity_error(&message), recovery_guidance())
                 } else if boot_timeout {
-                    "bootloader timeout after one retry; device may still be in bootloader mode; re-run with a known-good image; use physical recovery path if device no longer enumerates".to_string()
+                    format!("bootloader timeout after one retry; {}", recovery_guidance())
                 } else {
                     message
                 };
@@ -182,6 +183,18 @@ fn failure_progress(progress: f32, err: &str) -> Progress {
     }
 }
 
+fn recovery_guidance() -> &'static str {
+    "device may still be in bootloader mode; re-run with a known-good image; use physical recovery path if device no longer enumerates"
+}
+
+fn classify_integrity_error(message: &str) -> &'static str {
+    if message.contains("incomplete transfer") {
+        "incomplete transfer"
+    } else {
+        "integrity mismatch"
+    }
+}
+
 fn phase_name(phase: ProgressPhase) -> &'static str {
     match phase {
         ProgressPhase::Preflight => "preflight",
@@ -213,6 +226,7 @@ fn write_payload_to_tmp(file_buf: &[u8]) -> Result<PathBuf> {
 struct Scenario {
     bootloader_timeouts: u8,
     integrity_failure: bool,
+    incomplete_transfer: bool,
     post_verify_failure: bool,
     supports_get_rev: bool,
 }
@@ -223,6 +237,7 @@ impl Scenario {
             return Self {
                 bootloader_timeouts: 2,
                 integrity_failure: false,
+                incomplete_transfer: false,
                 post_verify_failure: false,
                 supports_get_rev: true,
             };
@@ -231,21 +246,33 @@ impl Scenario {
             return Self {
                 bootloader_timeouts: 0,
                 integrity_failure: true,
+                incomplete_transfer: false,
+                post_verify_failure: false,
+                supports_get_rev: true,
+            };
+        }
+        if payload.starts_with(SCENARIO_INCOMPLETE_TRANSFER) {
+            return Self {
+                bootloader_timeouts: 0,
+                integrity_failure: false,
+                incomplete_transfer: true,
                 post_verify_failure: false,
                 supports_get_rev: true,
             };
         }
         if payload.starts_with(SCENARIO_POST_VERIFY_FAIL) {
             return Self {
-                bootloader_timeouts: 0,
-                integrity_failure: false,
-                post_verify_failure: true,
-                supports_get_rev: true,
-            };
+            bootloader_timeouts: 0,
+            integrity_failure: false,
+            incomplete_transfer: false,
+            post_verify_failure: true,
+            supports_get_rev: true,
+        };
         }
         Self {
             bootloader_timeouts: 0,
             integrity_failure: false,
+            incomplete_transfer: false,
             post_verify_failure: false,
             supports_get_rev: true,
         }
@@ -256,6 +283,7 @@ impl Scenario {
 struct RuntimeState {
     bootloader_timeouts_remaining: u8,
     integrity_failure: bool,
+    incomplete_transfer: bool,
     post_verify_failure: bool,
     supports_get_rev: bool,
     post_verify_queries: Vec<String>,
@@ -266,6 +294,7 @@ impl RuntimeState {
         Self {
             bootloader_timeouts_remaining: scenario.bootloader_timeouts,
             integrity_failure: scenario.integrity_failure,
+            incomplete_transfer: scenario.incomplete_transfer,
             post_verify_failure: scenario.post_verify_failure,
             supports_get_rev: scenario.supports_get_rev,
             post_verify_queries: Vec::new(),
@@ -296,6 +325,9 @@ impl FirmwareIo for BridgeFirmwareIo {
         if marker == [0xBA, 0xC2] && state.integrity_failure {
             anyhow::bail!("integrity mismatch during transfer completion");
         }
+        if marker == [0xBA, 0xC2] && state.incomplete_transfer {
+            anyhow::bail!("incomplete transfer detected during transfer completion");
+        }
         Ok(())
     }
 
@@ -317,4 +349,3 @@ impl FirmwareIo for BridgeFirmwareIo {
         Ok(())
     }
 }
-
