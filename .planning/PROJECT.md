@@ -37,11 +37,13 @@ The MonsGeek configurator must work on Linux, enabling users to configure, tune,
 - Userspace input daemon (`monsgeek-inputd`) works end-to-end: claims IF0/IF1 via `SessionMode::InputOnly`, processes HID boot protocol through `InputProcessor` with 15ms debounce, injects events via uinput, coexists with gRPC bridge on IF2 (Validated in Phase 5.1)
 - Daemon survives disconnect/reconnect cycles via udev monitoring with 2s firmware settle time (Validated in Phase 5.1)
 - M5W presents as two USB devices on the same bus: PID 0x4011 (receiver/secondary) and PID 0x4015 (keyboard). Probing PID 0x4011 poisons the firmware's command state for PID 0x4015. Non-probing VID/PID discovery avoids this (Discovered in Phase 5.1)
+- `monsgeek-cli` provides typed operations (`devices/info/led/debounce/poll/profile/keymap/macro/raw`) against DriverGrpc with deterministic selectors and unsafe raw-write gating (Validated in Phase 07)
+- Systemd deployment is operational for `monsgeek-driver` and `monsgeek-inputd`, including enable/start, CLI smoke against managed services, and restart-on-failure recovery (`NRestarts` increment) (Validated in Phase 07)
 
 ## Active Work
 
-- Phase 5.1 complete — Userspace input daemon verified on real M5W hardware with disconnect/reconnect, bridge coexistence, and clean shutdown
-- Next: Phase 6 — Macros and device-specific advanced features
+- Phase 07 complete — CLI + service deployment verified on host with managed services
+- Next: Phase 08 — Firmware update
 - Keep the registry/profile system data-driven so new supported keyboards do not require hardcoded runtime constants
 
 ## Deferred But Planned
@@ -49,7 +51,6 @@ The MonsGeek configurator must work on Linux, enabling users to configure, tune,
 - 2.4GHz dongle transport for M5W and related devices
 - Additional validated device profiles beyond the M5W
 - Firmware flashing with explicit safety gates
-- Optional CLI and systemd packaging after the bridge is working
 
 ## Out of Scope
 
@@ -117,4 +118,4 @@ The MonsGeek configurator must work on Linux, enabling users to configure, tune,
 | M5W first, framework-general architecture | The M5W is the first verified target, but the code should not hardcode MonsGeek-only assumptions if the FEA family can share abstractions | Active |
 
 ---
-*Last updated: 2026-03-23 — corrected after real hardware validation of Phase 2 transport behavior*
+*Last updated: 2026-03-28 — Phase 07 closeout (CLI + systemd service deployment verified)*

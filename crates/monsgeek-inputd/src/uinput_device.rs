@@ -110,6 +110,10 @@ mod tests {
     #[test]
     fn test_create_uinput_device() {
         let device = create_uinput_device("monsgeek-inputd-test");
-        assert!(device.is_ok(), "Failed to create uinput device: {:?}", device.err());
+        assert!(
+            device.is_ok(),
+            "Failed to create uinput device: {:?}",
+            device.err()
+        );
     }
 }

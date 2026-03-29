@@ -71,7 +71,10 @@ fn version_builds_get_usb_version_request() {
     )
     .expect("firmware version should build request");
 
-    assert_eq!(plan.request.expect("request should be set")[0], cmd::GET_USB_VERSION);
+    assert_eq!(
+        plan.request.expect("request should be set")[0],
+        cmd::GET_USB_VERSION
+    );
 }
 
 #[test]

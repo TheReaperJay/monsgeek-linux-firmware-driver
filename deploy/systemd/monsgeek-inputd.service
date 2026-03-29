@@ -1,0 +1,15 @@
+[Unit]
+Description=MonsGeek Input Daemon
+After=monsgeek-driver.service
+Requires=monsgeek-driver.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/monsgeek-inputd --debounce-ms 15
+Restart=on-failure
+RestartSec=2
+Environment=MONSGEEK_DEVICE_REGISTRY_DIR=/usr/share/monsgeek/protocol/devices
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

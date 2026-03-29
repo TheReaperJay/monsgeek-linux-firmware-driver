@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use monsgeek_driver::{DriverFlags, DriverService};
 use monsgeek_driver::pb::driver::driver_grpc_server::DriverGrpcServer;
+use monsgeek_driver::{DriverFlags, DriverService};
 use tonic::transport::Server;
 use tower_http::cors::{Any, CorsLayer};
 

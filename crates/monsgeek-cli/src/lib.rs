@@ -3,17 +3,23 @@ pub mod commands;
 pub mod device_select;
 pub mod format;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use client::{DEFAULT_ENDPOINT, DriverClient};
 use commands::execute_command;
-use device_select::{SelectorOptions, load_registry, resolve_target_device, supported_online_devices};
+use device_select::{
+    SelectorOptions, load_registry, resolve_target_device, supported_online_devices,
+};
 use format::{print_command_result, print_devices};
 
 #[derive(Debug, Parser, Clone)]
-#[command(name = "monsgeek-cli", about = "Bridge-first MonsGeek command-line client")]
+#[command(
+    name = "monsgeek-cli",
+    about = "Bridge-first MonsGeek command-line client"
+)]
 pub struct Cli {
     #[arg(long, default_value = DEFAULT_ENDPOINT, value_name = "URL")]
     pub endpoint: String,
@@ -191,13 +197,17 @@ pub enum FirmwareCommands {
     Version,
     Validate {
         #[arg(long, value_name = "PATH")]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        #[arg(long, value_name = "DIR")]
+        download_dir: Option<PathBuf>,
         #[arg(long)]
         allow_unofficial: bool,
     },
     Flash {
         #[arg(long, value_name = "PATH")]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        #[arg(long, value_name = "DIR")]
+        download_dir: Option<PathBuf>,
         #[arg(long)]
         allow_unofficial: bool,
         #[arg(long)]
@@ -223,7 +233,22 @@ pub fn parse_byte(input: &str) -> std::result::Result<u8, String> {
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
+    let firmware_status = std::io::stderr().is_terminal()
+        && matches!(
+            &cli.command,
+            Commands::Firmware {
+                command: FirmwareCommands::Validate { .. } | FirmwareCommands::Flash { .. }
+            }
+        );
+
+    if firmware_status {
+        eprintln!("[firmware] connecting to driver at {}", cli.endpoint);
+    }
     let mut client = DriverClient::connect(&cli.endpoint).await?;
+
+    if firmware_status {
+        eprintln!("[firmware] requesting initial device list");
+    }
     let init = client.watch_dev_list_init().await?;
     let registry = load_registry()?;
     let online_supported = supported_online_devices(&init, &registry);
@@ -236,6 +261,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         _ => {
+            if firmware_status {
+                eprintln!("[firmware] resolving target device");
+            }
             let target = resolve_target_device(
                 SelectorOptions {
                     path: cli.path.as_deref(),
@@ -246,9 +274,34 @@ pub async fn run(cli: Cli) -> Result<()> {
                 &registry,
             )?;
 
-            let result = execute_command(&mut client, &target, &cli.command, cli.unsafe_mode).await?;
+            if firmware_status {
+                eprintln!("[firmware] executing {}", cli.command.operation_name());
+            }
+            let result =
+                execute_command(&mut client, &target, &cli.command, cli.unsafe_mode).await?;
             print_command_result(cli.json, &target, &result)?;
             Ok(())
+        }
+    }
+}
+
+impl Commands {
+    fn operation_name(&self) -> &'static str {
+        match self {
+            Commands::Devices { .. } => "devices",
+            Commands::Info => "info",
+            Commands::Led { .. } => "led",
+            Commands::Debounce { .. } => "debounce",
+            Commands::Poll { .. } => "poll",
+            Commands::Profile { .. } => "profile",
+            Commands::Keymap { .. } => "keymap",
+            Commands::Macro { .. } => "macro",
+            Commands::Raw { .. } => "raw",
+            Commands::Firmware { command } => match command {
+                FirmwareCommands::Version => "firmware version",
+                FirmwareCommands::Validate { .. } => "firmware validate",
+                FirmwareCommands::Flash { .. } => "firmware flash",
+            },
         }
     }
 }

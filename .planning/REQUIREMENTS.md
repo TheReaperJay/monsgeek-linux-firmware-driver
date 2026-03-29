@@ -27,7 +27,7 @@ Requirements for the current milestone. These focus on a working Linux transport
 - [x] **GRPC-06**: Server implements `insertDb` and `getItemFromDb` RPCs for web app key-value storage
 - [x] **GRPC-07**: Server sends the correct CORS headers so the MonsGeek web configurator can connect from browser context
 - [x] **GRPC-08**: Server matches the Windows `iot_driver.exe` proto contract exactly, including upstream field-name quirks
-- [ ] **GRPC-09**: Systemd service unit enables auto-start on boot with managed lifecycle
+- [x] **GRPC-09**: Systemd service unit enables auto-start on boot with managed lifecycle
 
 ### Key Remapping
 
@@ -73,8 +73,8 @@ Requirements for the current milestone. These focus on a working Linux transport
 
 ### CLI
 
-- [ ] **CLI-01**: User can perform core keyboard operations via command-line interface
-- [ ] **CLI-02**: CLI uses the same JSON-driven registry/profile data as the bridge
+- [x] **CLI-01**: User can perform core keyboard operations via command-line interface
+- [x] **CLI-02**: CLI uses the same JSON-driven registry/profile data as the bridge
 
 ### Device Registry
 
@@ -143,9 +143,9 @@ Deferred until the core wired bridge is stable.
 | INPUT-02 | Phase 5.1 | Complete |
 | INPUT-03 | Phase 5.1 | Complete |
 | INPUT-04 | Phase 5.1 | Complete |
-| CLI-01 | Phase 7 | Pending |
-| CLI-02 | Phase 7 | Pending |
-| GRPC-09 | Phase 7 | Pending |
+| CLI-01 | Phase 7 | Complete |
+| CLI-02 | Phase 7 | Complete |
+| GRPC-09 | Phase 7 | Complete |
 | FW-01 | Phase 8 | Pending |
 | FW-02 | Phase 8 | Pending |
 | FW-03 | Phase 8 | Pending |
@@ -157,4 +157,4 @@ Deferred until the core wired bridge is stable.
 - Unmapped: 0
 
 ---
-*Last updated: 2026-03-23 after hardware-corrected transport and roadmap review*
+*Last updated: 2026-03-28 after Phase 07 closeout verification*

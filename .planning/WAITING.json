@@ -1,0 +1,11 @@
+{
+  "status": "waiting",
+  "type": "human-verify",
+  "question": "Run firmware-flash-checkpoint.sh and confirm success + failure flows",
+  "options": [
+    "approved",
+    "issue"
+  ],
+  "since": "2026-03-28T10:37:46.340Z",
+  "phase": "08"
+}

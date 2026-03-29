@@ -63,7 +63,6 @@ pub enum TransportError {
         payload_len: usize,
         max_payload_len: usize,
     },
-
 }
 
 impl From<rusb::Error> for TransportError {

@@ -11,8 +11,8 @@
 use std::fmt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use monsgeek_protocol::DeviceRegistry;
@@ -86,85 +86,167 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))?;
 
+    log::info!("Discovery mode: descriptor-only (IF2 probe disabled in inputd)");
+
     let registry = load_registry()?;
 
-    // Pin to the first successfully discovered firmware device ID so reconnect
-    // prefers the same physical keyboard in multi-device environments.
-    let mut pinned_device_id: Option<i32> = None;
+    // Prefer reconnecting the last known-good location first, but keep
+    // fallback candidates so the daemon can recover ownership automatically.
+    let mut preferred_location: Option<(u8, u8)> = None;
     let mut reconnect_vid: Option<u16> = None;
 
     while !shutdown.load(Ordering::Relaxed) {
-        let device = match find_target_device(&registry, config.device_filter, pinned_device_id) {
-            Ok(device) => device,
-            Err(err) => {
-                log::warn!("No target keyboard available yet: {}", err);
-                sd_notify::notify(&[sd_notify::NotifyState::Status(
-                    "Waiting for MonsGeek keyboard",
-                )])
-                .ok();
-
-                if let Some(vid) = reconnect_vid {
-                    if let Err(wait_err) =
-                        wait_for_device_udev(&shutdown, vid, Duration::from_secs(3))
-                    {
-                        log::error!("udev wait failed: {}", wait_err);
-                    }
-                } else {
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-                continue;
-            }
-        };
-        pinned_device_id.get_or_insert(device.device_id);
-        reconnect_vid = Some(device.vid);
-
-        log::info!(
-            "Target device: {} (ID {}) at {:03}:{:03}",
-            device.display_name,
-            device.device_id,
-            device.bus,
-            device.address
-        );
-
-        let uinput_name = config
-            .device_name
-            .clone()
-            .unwrap_or_else(|| format!("{} (monsgeek-inputd)", device.display_name));
-
-        match try_connect_and_run(&config, &shutdown, &device, &uinput_name) {
-            Ok(()) => break, // Clean shutdown via signal
-            Err(e) => {
-                log::warn!("Connection lost: {}", e);
-
-                if matches!(e, DaemonError::Disconnected) {
-                    // Device was unplugged — wait for udev add event
+        let candidates =
+            match find_target_devices(&registry, config.device_filter, preferred_location) {
+                Ok(candidates) => candidates,
+                Err(err) => {
+                    log::warn!("No target keyboard available yet: {}", err);
                     sd_notify::notify(&[sd_notify::NotifyState::Status(
-                        "Waiting for keyboard reconnect",
+                        "Waiting for MonsGeek keyboard",
                     )])
                     .ok();
-                    log::info!("Waiting for keyboard reconnect via udev...");
-                    if let Err(e) = wait_for_device_udev(
-                        &shutdown,
-                        reconnect_vid.unwrap_or(0),
-                        Duration::from_secs(5),
-                    ) {
-                        log::error!("udev wait failed: {}", e);
-                        return Err(e.to_string().into());
+
+                    if let Some(vid) = reconnect_vid {
+                        if let Err(wait_err) =
+                            wait_for_device_udev(&shutdown, vid, Duration::from_secs(3))
+                        {
+                            log::error!("udev wait failed: {}", wait_err);
+                        }
+                    } else {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    continue;
+                }
+            };
+
+        let mut handled_disconnect = false;
+
+        for device in candidates {
+            reconnect_vid = Some(device.vid);
+
+            log::info!(
+                "Target candidate: {} (ID {}) at {:03}:{:03}",
+                device.display_name,
+                device.device_id,
+                device.bus,
+                device.address
+            );
+
+            let uinput_name = config
+                .device_name
+                .clone()
+                .unwrap_or_else(|| format!("{} (monsgeek-inputd)", device.display_name));
+
+            match try_connect_and_run(&config, &shutdown, &device, &uinput_name) {
+                Ok(()) => return Ok(()), // Clean shutdown via signal
+                Err(e) => {
+                    log::warn!(
+                        "Candidate {:03}:{:03} failed: {}",
+                        device.bus,
+                        device.address,
+                        e
+                    );
+
+                    if matches!(e, DaemonError::Disconnected) {
+                        preferred_location = Some((device.bus, device.address));
+                        handled_disconnect = true;
+                        // Device was unplugged — wait for udev add event
+                        sd_notify::notify(&[sd_notify::NotifyState::Status(
+                            "Waiting for keyboard reconnect",
+                        )])
+                        .ok();
+                        log::info!("Waiting for keyboard reconnect via udev...");
+                        if let Err(e) = wait_for_device_udev(
+                            &shutdown,
+                            reconnect_vid.unwrap_or(0),
+                            Duration::from_secs(5),
+                        ) {
+                            log::error!("udev wait failed: {}", e);
+                            return Err(e.to_string().into());
+                        }
+
+                        // Settle time: the firmware needs time after re-enumeration
+                        // before it accepts control requests (SET_PROTOCOL, etc).
+                        if !shutdown.load(Ordering::Relaxed) {
+                            log::info!("Waiting 2s for device to settle...");
+                            std::thread::sleep(Duration::from_secs(2));
+                        }
+                        break;
                     }
                 }
-
-                // Settle time: the firmware needs time after re-enumeration
-                // before it accepts control requests (SET_PROTOCOL, etc).
-                if !shutdown.load(Ordering::Relaxed) {
-                    log::info!("Waiting 2s for device to settle...");
-                    std::thread::sleep(Duration::from_secs(2));
-                }
             }
+        }
+
+        if !handled_disconnect && !shutdown.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(300));
         }
     }
 
     log::info!("Daemon shut down cleanly");
     Ok(())
+}
+
+/// Resolve target device candidates from the registry and connected USB devices.
+fn find_target_devices(
+    registry: &DeviceRegistry,
+    device_filter: Option<(u8, u8)>,
+    preferred_location: Option<(u8, u8)>,
+) -> Result<Vec<DeviceInfo>, String> {
+    // Input daemon must stay on descriptor-only discovery and avoid IF2
+    // probing (`GET_USB_VERSION`) to prevent control-path contention.
+    let devices = discovery::find_devices_no_probe(registry).map_err(|e| e.to_string())?;
+    select_target_devices(registry, devices, device_filter, preferred_location)
+}
+
+fn select_target_devices(
+    registry: &DeviceRegistry,
+    mut devices: Vec<DeviceInfo>,
+    device_filter: Option<(u8, u8)>,
+    preferred_location: Option<(u8, u8)>,
+) -> Result<Vec<DeviceInfo>, String> {
+    if devices.is_empty() {
+        return Err("No MonsGeek keyboards found. Is the keyboard connected?".to_string());
+    }
+
+    // Keep auto-selection deterministic across runs.
+    devices.sort_by_key(|d| (d.bus, d.address, d.vid, d.pid));
+
+    if let Some((bus, addr)) = device_filter {
+        let mut filtered: Vec<DeviceInfo> = devices
+            .into_iter()
+            .filter(|d| d.bus == bus && d.address == addr)
+            .collect();
+        if filtered.is_empty() {
+            return Err(format!(
+                "No MonsGeek keyboard found at bus {:03}:{:03}.",
+                bus, addr
+            ));
+        }
+        filtered.sort_by_key(|d| (d.bus, d.address, d.vid, d.pid));
+        return Ok(filtered);
+    }
+
+    // Prefer canonical registry PIDs over runtime alias PIDs for first choice.
+    // Fallback candidates remain in the list for automatic recovery.
+    devices.sort_by_key(|d| !registry.find_by_vid_pid(d.vid, d.pid).is_empty());
+    devices.reverse();
+
+    if let Some((bus, address)) = preferred_location {
+        devices.sort_by_key(|d| d.bus != bus || d.address != address);
+    }
+
+    if devices.len() > 1 {
+        let preferred = &devices[0];
+        log::warn!(
+            "Multiple MonsGeek keyboards found. Trying {} at {:03}:{:03} first \
+             and auto-falling back if needed. Use --device BUS:ADDR to pin one.",
+            preferred.display_name,
+            preferred.bus,
+            preferred.address
+        );
+    }
+
+    Ok(devices)
 }
 
 /// Attempt to connect to the keyboard and run the input polling loop.
@@ -191,7 +273,10 @@ fn try_connect_and_run(
         device.vid, device.pid
     ))])
     .ok();
-    log::info!("Connected and polling IF0 (debounce {}ms)", config.debounce_ms);
+    log::info!(
+        "Connected and polling IF0 (debounce {}ms)",
+        config.debounce_ms
+    );
 
     let mut report = [0u8; 8];
     let mut last_watchdog = Instant::now();
@@ -328,26 +413,37 @@ fn wait_for_device_udev(
 fn load_registry() -> Result<DeviceRegistry, Box<dyn std::error::Error>> {
     // Resolve registry locations in priority order:
     // 1) explicit override (`MONSGEEK_DEVICE_REGISTRY_DIR`)
-    // 2) cwd-relative workspace path
-    // 3) executable-relative fallback
+    // 2) packaged install path
+    // 3) cwd-relative workspace path
+    // 4) executable-relative fallback
     let mut candidates = Vec::new();
 
     if let Ok(path) = std::env::var("MONSGEEK_DEVICE_REGISTRY_DIR") {
         candidates.push(Path::new(&path).to_path_buf());
     }
 
+    candidates.push(Path::new("/usr/share/monsgeek/protocol/devices").to_path_buf());
     candidates.push(Path::new(DEVICE_REGISTRY_PATH).to_path_buf());
     candidates.push(
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|p| p.join("../../").join(DEVICE_REGISTRY_PATH)))
+            .and_then(|p| {
+                p.parent()
+                    .map(|p| p.join("../../").join(DEVICE_REGISTRY_PATH))
+            })
             .unwrap_or_default(),
     );
 
     for path in &candidates {
         if path.is_dir() {
-            return DeviceRegistry::load_from_directory(path)
-                .map_err(|e| format!("Failed to load device registry from {}: {}", path.display(), e).into());
+            return DeviceRegistry::load_from_directory(path).map_err(|e| {
+                format!(
+                    "Failed to load device registry from {}: {}",
+                    path.display(),
+                    e
+                )
+                .into()
+            });
         }
     }
 
@@ -362,83 +458,6 @@ fn load_registry() -> Result<DeviceRegistry, Box<dyn std::error::Error>> {
     .into())
 }
 
-/// Find the target device from the registry and connected USB devices.
-fn find_target_device(
-    registry: &DeviceRegistry,
-    device_filter: Option<(u8, u8)>,
-    pinned_device_id: Option<i32>,
-) -> Result<DeviceInfo, String> {
-    // Resolve identity via firmware ID probe for robust multi-device matching.
-    let devices = discovery::probe_devices(registry).map_err(|e| e.to_string())?;
-    select_target_device(registry, devices, device_filter, pinned_device_id)
-}
-
-fn select_target_device(
-    registry: &DeviceRegistry,
-    mut devices: Vec<DeviceInfo>,
-    device_filter: Option<(u8, u8)>,
-    pinned_device_id: Option<i32>,
-) -> Result<DeviceInfo, String> {
-    if devices.is_empty() {
-        return Err("No MonsGeek keyboards found. Is the keyboard connected?".to_string());
-    }
-
-    // Keep auto-selection deterministic across runs.
-    devices.sort_by_key(|d| (d.bus, d.address, d.vid, d.pid));
-
-    if let Some(device_id) = pinned_device_id {
-        devices.retain(|d| d.device_id == device_id);
-        if devices.is_empty() {
-            return Err(format!(
-                "Pinned keyboard with firmware device ID {} is not connected",
-                device_id
-            ));
-        }
-    }
-
-    if let Some((bus, addr)) = device_filter {
-        for device in &devices {
-            if device.bus == bus && device.address == addr {
-                return Ok(device.clone());
-            }
-        }
-        return Err(format!(
-            "No MonsGeek keyboard found at bus {:03}:{:03}. Found: {}",
-            bus,
-            addr,
-            devices
-                .iter()
-                .map(|d| format!("{:03}:{:03} ({})", d.bus, d.address, d.display_name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    // Prefer the profile's canonical PID for each discovered firmware device ID.
-    // This picks wired over receiver when both are present for a single keyboard.
-    let selected_index = devices
-        .iter()
-        .position(|device| {
-            registry
-                .find_by_id(device.device_id)
-                .is_some_and(|definition| definition.pid == device.pid)
-        })
-        .unwrap_or(0);
-    let selected = devices[selected_index].clone();
-
-    if devices.len() > 1 {
-        log::warn!(
-            "Multiple MonsGeek keyboards found. Using {} at {:03}:{:03}. \
-             Use --device BUS:ADDR to select a specific one.",
-            selected.display_name,
-            selected.bus,
-            selected.address
-        );
-    }
-
-    Ok(selected)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,12 +469,7 @@ mod tests {
         DeviceRegistry::load_from_directory(&devices_dir).expect("registry load failed")
     }
 
-    fn fake_device(
-        device_id: i32,
-        pid: u16,
-        bus: u8,
-        address: u8,
-    ) -> DeviceInfo {
+    fn fake_device(device_id: i32, pid: u16, bus: u8, address: u8) -> DeviceInfo {
         DeviceInfo {
             vid: 0x3151,
             pid,
@@ -468,45 +482,46 @@ mod tests {
     }
 
     #[test]
-    fn select_target_prefers_canonical_pid_for_device_id() {
+    fn select_targets_prefers_canonical_pid_for_runtime_alias() {
         let registry = registry();
-        let m5w = registry.find_by_id(1308).expect("M5W must exist");
         let candidates = vec![
-            fake_device(1308, 0x4011, 1, 2), // non-canonical runtime PID
-            fake_device(1308, m5w.pid, 1, 3), // canonical profile PID
+            fake_device(1308, 0x4011, 1, 2), // runtime alias PID
+            fake_device(1308, 0x4015, 1, 3), // canonical PID
         ];
 
-        let selected =
-            select_target_device(&registry, candidates, None, None).expect("selection failed");
-        assert_eq!(selected.pid, m5w.pid);
-        assert_eq!(selected.bus, 1);
-        assert_eq!(selected.address, 3);
+        let selected = select_target_devices(&registry, candidates, None, None)
+            .expect("selection failed");
+        assert_eq!(selected[0].pid, 0x4015);
+        assert_eq!(selected[0].bus, 1);
+        assert_eq!(selected[0].address, 3);
     }
 
     #[test]
-    fn select_target_applies_pinned_device_filter() {
+    fn select_targets_applies_preferred_location_ordering() {
         let registry = registry();
         let candidates = vec![
             fake_device(1308, 0x4015, 1, 2),
             fake_device(2299, 0x5002, 1, 3),
         ];
 
-        let selected = select_target_device(&registry, candidates, None, Some(2299))
+        let selected = select_target_devices(&registry, candidates, None, Some((1, 3)))
             .expect("selection failed");
-        assert_eq!(selected.device_id, 2299);
+        assert_eq!(selected[0].bus, 1);
+        assert_eq!(selected[0].address, 3);
     }
 
     #[test]
-    fn select_target_filters_by_bus_address() {
+    fn select_targets_filters_by_bus_address() {
         let registry = registry();
         let candidates = vec![
             fake_device(1308, 0x4015, 1, 2),
             fake_device(2299, 0x5002, 1, 3),
         ];
 
-        let selected = select_target_device(&registry, candidates, Some((1, 3)), None)
+        let selected = select_target_devices(&registry, candidates, Some((1, 3)), None)
             .expect("selection failed");
-        assert_eq!(selected.bus, 1);
-        assert_eq!(selected.address, 3);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].bus, 1);
+        assert_eq!(selected[0].address, 3);
     }
 }

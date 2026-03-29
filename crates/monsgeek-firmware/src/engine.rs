@@ -56,14 +56,19 @@ impl<T: FirmwareIo> FirmwareEngine for DefaultFirmwareEngine<T> {
 
         let chunk_count = image.len().div_ceil(CHUNK_SIZE);
         if chunk_count == 0 {
-            progress(ProgressEvent::new(ProgressPhase::Failed, 1.0).with_message("empty firmware image"));
+            progress(
+                ProgressEvent::new(ProgressPhase::Failed, 1.0).with_message("empty firmware image"),
+            );
             anyhow::bail!("firmware image is empty");
         }
 
         for (chunk_index, chunk) in image.chunks(CHUNK_SIZE).enumerate() {
             let ratio = (chunk_index + 1) as f32 / chunk_count as f32;
             let progress_value = 0.30 + (0.55 * ratio);
-            progress(ProgressEvent::new(ProgressPhase::TransferChunks, progress_value));
+            progress(ProgressEvent::new(
+                ProgressPhase::TransferChunks,
+                progress_value,
+            ));
             self.io.send_chunk(chunk_index, chunk)?;
         }
 

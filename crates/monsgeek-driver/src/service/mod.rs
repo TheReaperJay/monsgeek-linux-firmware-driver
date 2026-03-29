@@ -11,7 +11,7 @@ use std::time::Duration;
 use futures::Stream;
 use futures::stream::{self, StreamExt};
 use monsgeek_protocol::{
-    ChecksumType, CommandDispatchPolicy, CommandPolicyError, CommandPolicyErrorCode,
+    ChecksumType, CommandClass, CommandDispatchPolicy, CommandPolicyError, CommandPolicyErrorCode,
     CommandReadPolicy, DeviceDefinition, DeviceRegistry, evaluate_outbound_command,
     normalize_outbound_command,
 };
@@ -476,11 +476,9 @@ impl DriverService {
             }
 
             if let Some(id) = hinted_id {
-                let mut by_vid_and_id = devices
-                    .values()
-                    .filter(|device| {
-                        device.registration.vid == vid && device.registration.device_id == id
-                    });
+                let mut by_vid_and_id = devices.values().filter(|device| {
+                    device.registration.vid == vid && device.registration.device_id == id
+                });
                 if let Some(first) = by_vid_and_id.next() {
                     if by_vid_and_id.next().is_some() {
                         return Err(Status::failed_precondition(
@@ -528,6 +526,18 @@ impl DriverService {
         self.enqueue_synthetic_empty_read(requested_path);
         if canonical_path != requested_path {
             self.enqueue_synthetic_empty_read(canonical_path);
+        }
+    }
+
+    fn enqueue_synthetic_response_for_aliases(
+        &self,
+        requested_path: &str,
+        canonical_path: &str,
+        response: Vec<u8>,
+    ) {
+        self.enqueue_synthetic_response(requested_path, response.clone());
+        if canonical_path != requested_path {
+            self.enqueue_synthetic_response(canonical_path, response);
         }
     }
 
@@ -588,6 +598,14 @@ impl DriverService {
         }
 
         let msg = normalize_outbound_command(&definition, msg);
+        if decision.class == CommandClass::Query {
+            let response = bridge_transport::query_command(handle, msg, checksum)
+                .await
+                .map_err(Status::internal)?;
+            self.enqueue_synthetic_response_for_aliases(path, &canonical_path, response);
+            return Ok(());
+        }
+
         bridge_transport::send_command(handle, msg, checksum)
             .await
             .map_err(Status::internal)
@@ -709,6 +727,12 @@ fn protocol_devices_dir() -> PathBuf {
         return PathBuf::from(path);
     }
 
+    // Default install location for packaged/systemd deployments.
+    let installed = PathBuf::from("/usr/share/monsgeek/protocol/devices");
+    if installed.is_dir() {
+        return installed;
+    }
+
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../monsgeek-protocol")
         .join("devices")
@@ -819,12 +843,10 @@ impl DriverGrpc for DriverService {
         let msg = request.into_inner();
         tracing::info!("read_msg: path={}", msg.device_path);
         match self.read_response_rpc(&msg.device_path).await {
-            Ok(data) => {
-                Ok(Response::new(ResRead {
-                    err: String::new(),
-                    msg: data,
-                }))
-            }
+            Ok(data) => Ok(Response::new(ResRead {
+                err: String::new(),
+                msg: data,
+            })),
             Err(e) => {
                 tracing::warn!("read_msg failed for path={}: {}", msg.device_path, e);
                 Ok(Response::new(ResRead {
@@ -1233,11 +1255,7 @@ mod tests {
         let cmd = def.commands().set_keymatrix;
         let msg = make_set_keymatrix_msg(cmd, 4, 0, 0);
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("profile"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("profile"), "got: {}", err.message());
     }
 
     #[test]
@@ -1371,11 +1389,7 @@ mod tests {
         let cmd = def.commands().set_fn_simple.unwrap();
         let msg = make_simple_msg(cmd, 4, 50, [0, 5, 0, 0]);
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("profile"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("profile"), "got: {}", err.message());
     }
 
     #[test]
@@ -1439,7 +1453,10 @@ mod tests {
         msg
     }
 
-    fn make_set_profile_msg(definition: &monsgeek_protocol::DeviceDefinition, profile: u8) -> Vec<u8> {
+    fn make_set_profile_msg(
+        definition: &monsgeek_protocol::DeviceDefinition,
+        profile: u8,
+    ) -> Vec<u8> {
         vec![definition.commands().set_profile, profile]
     }
 
@@ -1521,11 +1538,7 @@ mod tests {
         let def = make_test_definition();
         let msg = make_set_fn_msg(4, 50);
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("profile"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("profile"), "got: {}", err.message());
     }
 
     #[test]
@@ -1558,11 +1571,7 @@ mod tests {
         let mut msg = make_set_fn_msg(0, 50);
         msg[1] = 2; // fn_sys > 1
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("fn_sys"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("fn_sys"), "got: {}", err.message());
     }
 
     #[test]
@@ -1571,11 +1580,7 @@ mod tests {
         let mut msg = make_set_fn_msg(0, 50);
         msg[1] = 1; // max is 0 when fnSysLayer is 1
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("fn_sys"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("fn_sys"), "got: {}", err.message());
     }
 
     #[test]
@@ -1598,11 +1603,7 @@ mod tests {
         let def = make_test_definition();
         let msg = make_set_profile_msg(&def, 4);
         let err = super::validate_dangerous_write(&def, &msg).unwrap_err();
-        assert!(
-            err.message().contains("profile"),
-            "got: {}",
-            err.message()
-        );
+        assert!(err.message().contains("profile"), "got: {}", err.message());
     }
 
     #[test]
@@ -1686,7 +1687,10 @@ mod tests {
                 "cmd 0x{:02X} should be transport-blocked on non-magnetic device",
                 cmd_byte
             );
-            assert_eq!(decision.read_policy, monsgeek_protocol::CommandReadPolicy::SyntheticEmptyRead);
+            assert_eq!(
+                decision.read_policy,
+                monsgeek_protocol::CommandReadPolicy::SyntheticEmptyRead
+            );
             assert!(decision.error.is_none());
         }
     }

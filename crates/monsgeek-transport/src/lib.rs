@@ -177,6 +177,34 @@ impl TransportHandle {
         result.map(|_| ())
     }
 
+    /// Send a command and return the echo-matched response.
+    ///
+    /// This uses transport-thread `Query` mode, which performs send+read with
+    /// retry semantics and echo-byte validation.
+    pub fn query_command(
+        &self,
+        cmd: u8,
+        data: &[u8],
+        checksum: ChecksumType,
+    ) -> Result<[u8; 64], TransportError> {
+        let (response_tx, response_rx) = bounded(1);
+        self.cmd_tx
+            .send(thread::CommandRequest {
+                cmd,
+                data: data.to_vec(),
+                checksum,
+                mode: thread::CommandMode::Query,
+                response_tx,
+            })
+            .map_err(|_| TransportError::ChannelClosed)?;
+
+        let result = response_rx
+            .recv()
+            .map_err(|_| TransportError::ChannelClosed)?;
+
+        result.map(|opt| opt.expect("query response must be Some"))
+    }
+
     /// Read a single 64-byte feature-report response from the connected device.
     ///
     /// This supports split send/read RPC semantics used by the gRPC bridge.

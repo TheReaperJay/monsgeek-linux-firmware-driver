@@ -393,29 +393,46 @@ impl UsbSession {
             .map_err(TransportError::from)
     }
 
-    /// Read a 64-byte HID feature report from IF2 via GET_REPORT control transfer.
+    /// Read a HID feature report from IF2 via GET_REPORT control transfer.
     ///
-    /// Returns the 64-byte response buffer by value. The caller receives the raw HID
-    /// payload -- no report ID prefix. The first byte of the returned array is the
-    /// command echo byte (for response matching in the flow_control layer).
+    /// Returns a normalized 64-byte payload by value (without report ID).
+    /// Some devices/stacks return 64 payload bytes directly, while others return
+    /// 65 bytes with leading report ID 0x00.
     ///
     /// # Contract
     ///
     /// The flow_control layer depends on this signature:
     /// `let response = session.vendor_get_report()?;`
     pub(crate) fn vendor_get_report(&self) -> Result<[u8; 64], TransportError> {
-        let mut buf = [0u8; 64];
-        self.handle
+        // Read one extra byte to handle stacks that prepend report ID 0x00.
+        let mut raw = [0u8; 65];
+        let read_len = self
+            .handle
             .read_control(
                 REQUEST_TYPE_IN,
                 HID_GET_REPORT,
                 FEATURE_REPORT_WVALUE,
                 IF2 as u16,
-                &mut buf,
+                &mut raw,
                 USB_TIMEOUT,
             )
             .map_err(TransportError::from)?;
-        Ok(buf)
+
+        match read_len {
+            64 => {
+                let mut payload = [0u8; 64];
+                payload.copy_from_slice(&raw[..64]);
+                Ok(payload)
+            }
+            65 => {
+                let mut payload = [0u8; 64];
+                payload.copy_from_slice(&raw[1..65]);
+                Ok(payload)
+            }
+            n => Err(TransportError::Usb(format!(
+                "unexpected GET_REPORT size: {n} bytes (expected 64 or 65)"
+            ))),
+        }
     }
 
     /// Read an 8-byte boot keyboard HID report from IF0's interrupt endpoint.
@@ -461,6 +478,15 @@ impl UsbSession {
     /// USB device address of the opened device.
     pub fn address(&self) -> u8 {
         self.handle.device().address()
+    }
+
+    /// USB product ID of the opened device.
+    pub(crate) fn product_id(&self) -> Option<u16> {
+        self.handle
+            .device()
+            .device_descriptor()
+            .ok()
+            .map(|d| d.product_id())
     }
 }
 

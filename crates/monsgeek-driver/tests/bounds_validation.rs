@@ -13,8 +13,7 @@ async fn test_bridge_transport_forwards_any_command() {
     msg[1] = 0; // profile
     msg[2] = 200; // key_index (OOB -- but bridge_transport does NOT validate)
     msg[6] = 10; // layer (OOB)
-    let result =
-        bridge_transport::send_command_with(mock.clone(), msg, ChecksumType::Bit7).await;
+    let result = bridge_transport::send_command_with(mock.clone(), msg, ChecksumType::Bit7).await;
     assert!(result.is_ok(), "bridge_transport must not validate bounds");
     assert_eq!(mock.sent_commands().len(), 1);
 }

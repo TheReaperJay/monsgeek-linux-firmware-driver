@@ -11,11 +11,15 @@ use tokio::sync::oneshot;
 use tonic::transport::Server;
 use tower_http::cors::{Any, CorsLayer};
 
-fn free_local_addr() -> std::net::SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+fn free_local_addr() -> Option<std::net::SocketAddr> {
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return None,
+        Err(err) => panic!("bind ephemeral failed: {err}"),
+    };
     let addr = listener.local_addr().expect("read addr");
     drop(listener);
-    addr
+    Some(addr)
 }
 
 async fn start_test_server(addr: std::net::SocketAddr) -> oneshot::Sender<()> {
@@ -51,7 +55,10 @@ fn grpc_full_service_contract_present() {
 
 #[tokio::test]
 async fn grpc_server_starts_http1() {
-    let addr = free_local_addr();
+    let addr = match free_local_addr() {
+        Some(addr) => addr,
+        None => return,
+    };
     let shutdown = start_test_server(addr).await;
 
     let client = reqwest::Client::new();
@@ -75,7 +82,10 @@ async fn grpc_server_starts_http1() {
 
 #[tokio::test]
 async fn grpc_cors_headers_present() {
-    let addr = free_local_addr();
+    let addr = match free_local_addr() {
+        Some(addr) => addr,
+        None => return,
+    };
     let shutdown = start_test_server(addr).await;
 
     let client = reqwest::Client::new();

@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 
 use crate::engine::{lower_24_bits, padded_checksum_64};
 use crate::manifest::FirmwareManifest;
-use crate::manifest::ManifestValidationError;
 use crate::manifest::FirmwareSource;
+use crate::manifest::ManifestValidationError;
 
 pub const REQUIRED_TYPED_PHRASE: &str = "FLASH M5W";
 
@@ -144,12 +144,7 @@ fn metadata_mismatch_error(request: &PreflightRequest) -> std::result::Result<()
         }
     }
 
-    if let Some(expected_model) = request
-        .manifest
-        .compatibility
-        .expected_model_slug
-        .as_ref()
-    {
+    if let Some(expected_model) = request.manifest.compatibility.expected_model_slug.as_ref() {
         if expected_model.trim().to_ascii_lowercase() != request.model_slug.to_ascii_lowercase() {
             return Err(format!(
                 "metadata mismatch: expected model '{expected_model}', got '{}'",

@@ -95,7 +95,8 @@ pub fn stream_progress(request: OtaUpgrade, target: BridgeTarget) -> Vec<Progres
                     attempts += 1;
                     events.push(Progress {
                         progress: 0.20,
-                        err: "phase=wait_bootloader retry=1/1 reason=bootloader timeout".to_string(),
+                        err: "phase=wait_bootloader retry=1/1 reason=bootloader timeout"
+                            .to_string(),
                     });
                     continue;
                 }
@@ -103,9 +104,16 @@ pub fn stream_progress(request: OtaUpgrade, target: BridgeTarget) -> Vec<Progres
                 let failure = if message.contains("integrity mismatch")
                     || message.contains("incomplete transfer")
                 {
-                    format!("{}: {message}; {}", classify_integrity_error(&message), recovery_guidance())
+                    format!(
+                        "{}: {message}; {}",
+                        classify_integrity_error(&message),
+                        recovery_guidance()
+                    )
                 } else if boot_timeout {
-                    format!("bootloader timeout after one retry; {}", recovery_guidance())
+                    format!(
+                        "bootloader timeout after one retry; {}",
+                        recovery_guidance()
+                    )
                 } else {
                     message
                 };
@@ -118,7 +126,10 @@ pub fn stream_progress(request: OtaUpgrade, target: BridgeTarget) -> Vec<Progres
     }
 }
 
-fn run_bridge_preflight(target: &BridgeTarget, firmware_path: &PathBuf) -> monsgeek_firmware::PreflightDecision {
+fn run_bridge_preflight(
+    target: &BridgeTarget,
+    firmware_path: &PathBuf,
+) -> monsgeek_firmware::PreflightDecision {
     let manifest = FirmwareManifest {
         format_version: Some("1".to_string()),
         firmware_version: None,
@@ -262,12 +273,12 @@ impl Scenario {
         }
         if payload.starts_with(SCENARIO_POST_VERIFY_FAIL) {
             return Self {
-            bootloader_timeouts: 0,
-            integrity_failure: false,
-            incomplete_transfer: false,
-            post_verify_failure: true,
-            supports_get_rev: true,
-        };
+                bootloader_timeouts: 0,
+                integrity_failure: false,
+                incomplete_transfer: false,
+                post_verify_failure: true,
+                supports_get_rev: true,
+            };
         }
         Self {
             bootloader_timeouts: 0,

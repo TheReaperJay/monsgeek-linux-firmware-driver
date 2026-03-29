@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: LED Control & Tuning** - RGB/LED modes and debounce/polling configuration verified on hardware, addressing the ghosting/double-letter issue (completed 2026-03-26)
 - [x] **Phase 5.1: Userspace Input Daemon** (INSERTED) - Persistent daemon claiming IF0 for software debounce, correct key ordering, and uinput injection, bypassing compositor jitter (completed 2026-03-27)
 - [ ] **Phase 6: Macros & Device-Specific Advanced Features** - Macro programming plus device-specific advanced switch features verified where supported by the target profile
-- [ ] **Phase 7: CLI & Service Deployment** - Command-line interface for all keyboard operations, systemd service for auto-start
+- [x] **Phase 7: CLI & Service Deployment** - Command-line interface for all keyboard operations, systemd service for auto-start (completed 2026-03-28)
 - [ ] **Phase 8: Firmware Update** - Firmware validation, bootloader entry with safety gates, chunk transfer with CRC-24 verification
 
 ## Phase Details
@@ -154,11 +154,11 @@ Plans:
   2. CLI loads device definitions from the JSON registry (same registry as the bridge) without hardcoded device constants
   3. Systemd service starts the bridge on boot and the MonsGeek web configurator connects without user intervention after login
   4. Systemd service restarts the bridge automatically if it crashes
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 07-01: TBD
-- [ ] 07-02: TBD
+- [x] 07-01-PLAN.md — Build bridge-first `monsgeek-cli` with typed commands, selector resolution, and unsafe raw-write gating
+- [x] 07-02-PLAN.md — Ship systemd deployment artifacts, operator scripts/docs, and service lifecycle verification
 
 ### Phase 8: Firmware Update
 **Goal**: Users can safely flash new firmware to their M5W keyboard from Linux with full safety validation
@@ -172,7 +172,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 08-01: TBD
+- [x] 08-01: TBD
 - [ ] 08-02: TBD
 
 ## Progress
@@ -190,5 +190,5 @@ Note: Phases 4, 5, and 6 all depend on Phase 3 and are independent of each other
 | 5. LED Control & Tuning | 2/2 | Complete   | 2026-03-26 |
 | 5.1. Userspace Input Daemon (INSERTED) | 3/3 | Complete   | 2026-03-27 |
 | 6. Macros & Device-Specific Advanced Features | 0/2 | Not started | - |
-| 7. CLI & Service Deployment | 0/2 | Not started | - |
+| 7. CLI & Service Deployment | 2/2 | Complete | 2026-03-28 |
 | 8. Firmware Update | 0/2 | Not started | - |

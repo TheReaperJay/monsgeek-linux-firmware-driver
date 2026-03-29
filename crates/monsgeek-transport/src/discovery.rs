@@ -58,9 +58,7 @@ pub fn enumerate_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, T
 /// Use this for callers that open the device themselves (e.g., in
 /// `SessionMode::InputOnly`) and cannot tolerate IF2 claims, vendor commands,
 /// or STALL recovery resets that [`probe_devices`] performs.
-pub fn find_devices_no_probe(
-    registry: &DeviceRegistry,
-) -> Result<Vec<DeviceInfo>, TransportError> {
+pub fn find_devices_no_probe(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, TransportError> {
     if registry.is_empty() {
         return Ok(Vec::new());
     }
@@ -83,7 +81,15 @@ pub fn find_devices_no_probe(
             continue;
         }
 
-        let definition = matches[0];
+        // Descriptor-only enumeration can map to multiple profiles sharing the
+        // same runtime VID/PID. Prefer an exact canonical PID match, then pick
+        // the smallest stable device ID for deterministic behavior.
+        let definition = matches
+            .iter()
+            .copied()
+            .find(|device| device.pid == pid)
+            .or_else(|| matches.iter().copied().min_by_key(|device| device.id))
+            .expect("matches is non-empty");
         found.push(DeviceInfo {
             vid,
             pid,
@@ -149,29 +155,34 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
             let usb_version = match controller.query_usb_version() {
                 Ok(info) => info,
                 Err(first_err) => {
-                    // Discovery should be non-destructive. If firmware query
-                    // fails, fall back to unique runtime VID/PID alias mapping.
                     log::debug!(
-                        "Probe query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                        "Probe query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {} — attempting STALL recovery",
                         candidate.bus,
                         candidate.address,
                         candidate.vid,
                         candidate.pid,
                         first_err
                     );
-                    if let Some(definition) = unique_runtime_match(registry, candidate) {
-                        log::warn!(
-                            "Probe fallback: using runtime VID/PID alias for bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) -> device {} ({})",
-                            candidate.bus,
-                            candidate.address,
-                            candidate.vid,
-                            candidate.pid,
-                            definition.id,
-                            definition.display_name
-                        );
-                        found.push(device_info_from_definition(definition, candidate));
+                    match controller
+                        .into_session()
+                        .reset_and_reopen()
+                        .and_then(|session| CommandController::new(session).query_usb_version())
+                    {
+                        Ok(info) => info,
+                        Err(retry_err) => {
+                            // Discovery identity is authoritative only when
+                            // GET_USB_VERSION succeeds.
+                            log::debug!(
+                                "Probe query recovery failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                                candidate.bus,
+                                candidate.address,
+                                candidate.vid,
+                                candidate.pid,
+                                retry_err
+                            );
+                            continue;
+                        }
                     }
-                    continue;
                 }
             };
 
@@ -182,19 +193,6 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
                     candidate.address,
                     usb_version.device_id
                 );
-                if let Some(definition) = unique_runtime_match(registry, candidate) {
-                    log::warn!(
-                        "Probe fallback: unknown reported device ID {}, using runtime alias for bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) -> device {} ({})",
-                        usb_version.device_id,
-                        candidate.bus,
-                        candidate.address,
-                        candidate.vid,
-                        candidate.pid,
-                        definition.id,
-                        definition.display_name
-                    );
-                    found.push(device_info_from_definition(definition, candidate));
-                }
                 continue;
             };
 
@@ -210,6 +208,7 @@ fn registry_supports_candidate(registry: &DeviceRegistry, candidate: UsbCandidat
     registry.supports_runtime_vid_pid(candidate.vid, candidate.pid)
 }
 
+#[cfg(test)]
 fn unique_runtime_match(
     registry: &DeviceRegistry,
     candidate: UsbCandidate,
@@ -277,8 +276,7 @@ pub fn probe_device_at(
                 address,
                 first_err
             );
-            return Ok(unique_runtime_match(registry, candidate)
-                .map(|definition| device_info_from_definition(definition, candidate)));
+            return Ok(None);
         }
     };
     let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
@@ -288,8 +286,7 @@ pub fn probe_device_at(
             candidate.address,
             usb_version.device_id
         );
-        return Ok(unique_runtime_match(registry, candidate)
-            .map(|definition| device_info_from_definition(definition, candidate)));
+        return Ok(None);
     };
 
     Ok(Some(device_info_from_definition(definition, candidate)))
@@ -533,8 +530,9 @@ mod tests {
 
     #[test]
     fn test_registry_supports_candidate_true_for_registered_pid() {
-        let registry = monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
-            .expect("device registry should load");
+        let registry =
+            monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
+                .expect("device registry should load");
         let candidate = UsbCandidate {
             vid: 0x3151,
             pid: 0x4015,
@@ -546,8 +544,9 @@ mod tests {
 
     #[test]
     fn test_registry_supports_candidate_false_for_unregistered_pid() {
-        let registry = monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
-            .expect("device registry should load");
+        let registry =
+            monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
+                .expect("device registry should load");
         let candidate = UsbCandidate {
             vid: 0x3151,
             pid: 0x4FFF,
@@ -559,15 +558,17 @@ mod tests {
 
     #[test]
     fn test_unique_runtime_match_for_alias_pid() {
-        let registry = monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
-            .expect("device registry should load");
+        let registry =
+            monsgeek_protocol::DeviceRegistry::load_from_directory(&protocol_devices_dir())
+                .expect("device registry should load");
         let candidate = UsbCandidate {
             vid: 0x3151,
             pid: 0x4011,
             bus: 0,
             address: 0,
         };
-        let matched = super::unique_runtime_match(&registry, candidate).expect("should match alias");
+        let matched =
+            super::unique_runtime_match(&registry, candidate).expect("should match alias");
         assert_eq!(matched.id, 1308);
     }
 }

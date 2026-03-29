@@ -51,8 +51,8 @@ fn test_magnetism_set_multi_header_format() {
     let page: u8 = 0;
 
     let mut frame = [0u8; 63];
-    frame[0] = subcmd;         // subcmd
-    frame[1] = page;           // page
+    frame[0] = subcmd; // subcmd
+    frame[1] = page; // page
     // frame[2..6] = padding (zeros)
     // frame[6] = checksum placeholder (transport fills this)
 
@@ -148,8 +148,8 @@ fn test_magnetism_per_key_travel_parsing() {
     // Data starts at byte 7 (after 7-byte header).
     let mut response = [0u8; 64];
     response[0] = cmd::GET_MULTI_MAGNETISM; // echo byte
-    response[1] = magnetism::PRESS_TRAVEL;  // subcmd echo
-    response[2] = 0;                        // page
+    response[1] = magnetism::PRESS_TRAVEL; // subcmd echo
+    response[2] = 0; // page
 
     // Fill 5 mock keys with known travel values (2-byte LE per key)
     let expected_values: [u16; 5] = [100, 200, 300, 400, 500];

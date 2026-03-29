@@ -1,0 +1,16 @@
+[Unit]
+Description=MonsGeek Driver Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/monsgeek-driver
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+Environment=MONSGEEK_DEVICE_REGISTRY_DIR=/usr/share/monsgeek/protocol/devices
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

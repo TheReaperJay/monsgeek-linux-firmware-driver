@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-stopped_at: Phase 07 context gathered
-last_updated: "2026-03-27T16:33:01.596Z"
+status: Ready to execute
+stopped_at: Phase 08 context gathered
+last_updated: "2026-03-28T10:01:22.462Z"
 progress:
   total_phases: 9
-  completed_phases: 7
-  total_plans: 17
-  completed_plans: 17
+  completed_phases: 8
+  total_plans: 21
+  completed_plans: 20
 ---
 
 # Project State
@@ -19,11 +19,11 @@ progress:
 See: [.planning/PROJECT.md](./PROJECT.md), [.planning/ROADMAP.md](./ROADMAP.md), and [.planning/REQUIREMENTS.md](./REQUIREMENTS.md)
 
 **Core value:** The MonsGeek configurator must work on Linux without requiring a Windows machine.
-**Current focus:** Phase 06 — macros-device-specific-advanced-features
+**Current focus:** Phase 08 — firmware-update
 
 ## Current Position
 
-Phase: 06 (macros-device-specific-advanced-features) — EXECUTING
+Phase: 08 (firmware-update) — EXECUTING
 Plan: 2 of 2
 
 ## What Is Verified
@@ -63,6 +63,10 @@ Implemented:
 - IF0 handoff fix so sessions no longer leave the keyboard dead when they are done
 - Native recovery entry point for reset/reopen verification without relying on the test harness
 - Routine hardware validation defaults to read-only checks; dangerous live writes require explicit opt-in
+- `monsgeek-cli` bridge-first command-line surface for devices/info/led/debounce/poll/profile/keymap/macro/raw
+- Deterministic CLI selectors (`--path`, `--device-id`, `--model`) with single-device auto-select and ambiguity guardrails
+- Systemd deployment artifacts for bridge/input daemon plus install/uninstall/verification scripts
+- Managed-service CLI smoke and restart-on-failure verification workflow
 
 Residual follow-up after Phase 2:
 
@@ -105,12 +109,11 @@ Residual follow-up after Phase 2:
 
 ## Pending Todos
 
-- Execute Phase 04 Plan 02 (key remapping gRPC endpoints)
+- None
 
 ## Blockers / Concerns
 
-- No automated blockers remain for Phase 03
-- Manual browser checkpoint is still required before Phase 03 can be declared closed
+- Reboot-persistence verification for services is available but optional (`scripts/verify-systemd-services.sh --with-reboot`)
 - Device-specific advanced features must be treated as per-profile capabilities, not assumed globally across the FEA family
 - Dongle support is not yet implemented and must not be implied as already working
 - Dangerous live writes can still wedge hardware if used carelessly; they remain opt-in and should stay out of routine development flows
@@ -123,6 +126,6 @@ Residual follow-up after Phase 2:
 
 ## Session Continuity
 
-Last major checkpoint: 2026-03-27
-Stopped at: Phase 07 context gathered
-Next recommended action: Execute Phase 06 Plan 02 (hardware macro verification)
+Last major checkpoint: 2026-03-28
+Stopped at: Phase 08 context gathered
+Next recommended action: Discuss/plan Phase 08 (firmware-update)

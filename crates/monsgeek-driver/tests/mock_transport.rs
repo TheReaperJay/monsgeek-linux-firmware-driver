@@ -57,4 +57,18 @@ impl BridgeTransport for MockTransport {
             .pop_front()
             .ok_or_else(|| TransportError::Usb("mock read queue empty".to_string()))
     }
+
+    fn query_command(
+        &self,
+        cmd: u8,
+        data: &[u8],
+        checksum: ChecksumType,
+    ) -> Result<[u8; 64], TransportError> {
+        self.sent.lock().expect("sent poisoned").push(SentCommand {
+            cmd,
+            payload: data.to_vec(),
+            checksum,
+        });
+        self.read_feature_report()
+    }
 }

@@ -120,7 +120,10 @@ fn test_input_only_session_opens() {
     let result = session.read_report_with_timeout(&mut report, Duration::from_millis(100));
     match result {
         Ok(n) => println!("read_report_with_timeout returned {} bytes", n),
-        Err(e) => panic!("read_report_with_timeout should not fail on InputOnly session: {}", e),
+        Err(e) => panic!(
+            "read_report_with_timeout should not fail on InputOnly session: {}",
+            e
+        ),
     }
 
     // Drop should not panic
@@ -232,7 +235,11 @@ fn test_input_poll_produces_actions() {
                             "  KeyAction: keycode={} value={} ({})",
                             action.keycode,
                             action.value,
-                            if action.value == 1 { "press" } else { "release" }
+                            if action.value == 1 {
+                                "press"
+                            } else {
+                                "release"
+                            }
                         );
                     }
                     total_actions += actions.len();

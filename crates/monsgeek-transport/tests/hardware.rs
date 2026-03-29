@@ -524,14 +524,21 @@ fn test_get_set_profile() {
             ));
         }
 
-        println!("Profile switched from {} to {} successfully", original_profile, target_profile);
+        println!(
+            "Profile switched from {} to {} successfully",
+            original_profile, target_profile
+        );
         Ok(())
     })();
 
     // Restore original profile
     let restore_result = (|| -> Result<(), String> {
         handle
-            .send_fire_and_forget(commands.set_profile, &[original_profile], ChecksumType::Bit7)
+            .send_fire_and_forget(
+                commands.set_profile,
+                &[original_profile],
+                ChecksumType::Bit7,
+            )
             .map_err(|e| format!("failed to restore profile {}: {e}", original_profile))?;
 
         let restored = handle
@@ -597,16 +604,17 @@ fn test_set_keymatrix_roundtrip_dangerous() {
 
     let test_result = (|| -> Result<(), String> {
         let set_payload: Vec<u8> = vec![
-            0,              // profile
-            0,              // key_index
-            0, 0,           // pad0, pad1
-            1,              // enabled
-            0,              // layer
-            0,              // checksum placeholder (transport overwrites)
-            0,              // config_type (normal key)
-            test_keycode,   // b1 = keycode
-            0,              // b2
-            0,              // b3
+            0, // profile
+            0, // key_index
+            0,
+            0,            // pad0, pad1
+            1,            // enabled
+            0,            // layer
+            0,            // checksum placeholder (transport overwrites)
+            0,            // config_type (normal key)
+            test_keycode, // b1 = keycode
+            0,            // b2
+            0,            // b3
         ];
         handle
             .send_fire_and_forget(commands.set_keymatrix, &set_payload, ChecksumType::Bit7)
@@ -654,9 +662,11 @@ fn test_get_ledparam() {
         .expect("GET_LEDPARAM query failed");
 
     assert_eq!(
-        response[0], cmd::GET_LEDPARAM,
+        response[0],
+        cmd::GET_LEDPARAM,
         "echo mismatch: expected 0x{:02X}, got 0x{:02X}",
-        cmd::GET_LEDPARAM, response[0]
+        cmd::GET_LEDPARAM,
+        response[0]
     );
 
     // Response layout: [echo, mode, speed_inv, brightness, option, r, g, b]
@@ -676,7 +686,11 @@ fn test_get_ledparam() {
     // Mode should be a valid LedMode (0-24 in reference enum)
     assert!(mode <= 24, "LED mode {} exceeds known range 0-24", mode);
     // Brightness should be 0-4
-    assert!(brightness <= 4, "brightness {} exceeds range 0-4", brightness);
+    assert!(
+        brightness <= 4,
+        "brightness {} exceeds range 0-4",
+        brightness
+    );
     // Speed inverted should be 0-4
     assert!(speed_inv <= 4, "speed_inv {} exceeds range 0-4", speed_inv);
 
@@ -705,8 +719,13 @@ fn test_set_get_ledparam_round_trip_dangerous() {
 
     println!(
         "Original LED: mode={} speed_inv={} brightness={} option=0x{:02X} rgb=({},{},{})",
-        original_payload[0], original_payload[1], original_payload[2],
-        original_payload[3], original_payload[4], original_payload[5], original_payload[6]
+        original_payload[0],
+        original_payload[1],
+        original_payload[2],
+        original_payload[3],
+        original_payload[4],
+        original_payload[5],
+        original_payload[6]
     );
 
     // SET_LEDPARAM payload: [mode, speed_inv, brightness, option, r, g, b]
@@ -723,13 +742,17 @@ fn test_set_get_ledparam_round_trip_dangerous() {
             .map_err(|e| format!("GET_LEDPARAM after set failed: {e}"))?;
 
         assert_eq!(
-            readback[0], cmd::GET_LEDPARAM,
+            readback[0],
+            cmd::GET_LEDPARAM,
             "GET_LEDPARAM echo mismatch after set"
         );
 
         // Verify mode changed to Breathing (2)
         if readback[1] != 2 {
-            return Err(format!("mode mismatch: set 2 (Breathing), read {}", readback[1]));
+            return Err(format!(
+                "mode mismatch: set 2 (Breathing), read {}",
+                readback[1]
+            ));
         }
 
         // Verify brightness changed to 3
@@ -739,7 +762,13 @@ fn test_set_get_ledparam_round_trip_dangerous() {
 
         println!(
             "LED round trip verified: mode={} speed_inv={} brightness={} option=0x{:02X} rgb=({},{},{})",
-            readback[1], readback[2], readback[3], readback[4], readback[5], readback[6], readback[7]
+            readback[1],
+            readback[2],
+            readback[3],
+            readback[4],
+            readback[5],
+            readback[6],
+            readback[7]
         );
 
         Ok(())
@@ -819,7 +848,8 @@ fn test_probe_polling_rate() {
                     "GET_REPORT returned unexpected echo byte 0x{:02X} (expected 0x{:02X}). \
                      Response may be stale buffer from previous command. \
                      M5W likely does NOT support GET_REPORT.",
-                    response[0], cmd::GET_REPORT
+                    response[0],
+                    cmd::GET_REPORT
                 );
             }
         }
@@ -863,9 +893,7 @@ fn test_get_macro_read() {
         .send_fire_and_forget(cmd::GET_MACRO, &[0, 0], ChecksumType::Bit7)
         .expect("GET_MACRO send failed");
 
-    let response = handle
-        .read_feature_report()
-        .expect("GET_MACRO read failed");
+    let response = handle.read_feature_report().expect("GET_MACRO read failed");
 
     println!(
         "GET_MACRO slot 0 page 0 response (first 16 bytes): {:02X?}",
@@ -891,7 +919,11 @@ fn test_get_macro_read() {
 
 /// Helper: read macro data via split send/read (bypasses echo matching).
 #[cfg(feature = "dangerous-hardware-writes")]
-fn read_macro_slot(handle: &monsgeek_transport::TransportHandle, slot: u8, page: u8) -> Result<[u8; 64], String> {
+fn read_macro_slot(
+    handle: &monsgeek_transport::TransportHandle,
+    slot: u8,
+    page: u8,
+) -> Result<[u8; 64], String> {
     handle
         .send_fire_and_forget(cmd::GET_MACRO, &[slot, page], ChecksumType::Bit7)
         .map_err(|e| format!("GET_MACRO send failed: {e}"))?;
@@ -914,8 +946,8 @@ fn test_set_get_macro_round_trip_dangerous() {
     let test_slot: u8 = 0; // Use slot 0 to avoid GET_MACRO stride bug
 
     // Read original macro data from slot 0, page 0
-    let original_page0 = read_macro_slot(&handle, test_slot, 0)
-        .expect("GET_MACRO for original data failed");
+    let original_page0 =
+        read_macro_slot(&handle, test_slot, 0).expect("GET_MACRO for original data failed");
 
     println!(
         "Original macro slot {} page 0 (first 16 bytes): {:02X?}",
@@ -930,10 +962,10 @@ fn test_set_get_macro_round_trip_dangerous() {
 
     let test_result = (|| -> Result<(), String> {
         let mut set_payload = vec![0u8; 63]; // Full payload (transport pads to 64 with cmd byte)
-        set_payload[0] = test_slot;           // macro_index
-        set_payload[1] = 0;                   // page = 0
+        set_payload[0] = test_slot; // macro_index
+        set_payload[1] = 0; // page = 0
         set_payload[2] = test_pattern.len() as u8; // chunk_len
-        set_payload[3] = 1;                   // is_last = true
+        set_payload[3] = 1; // is_last = true
         // set_payload[4..6] = pad (already zero)
         // set_payload[6] = checksum placeholder (transport overwrites)
         set_payload[7..7 + test_pattern.len()].copy_from_slice(&test_pattern);
@@ -960,7 +992,8 @@ fn test_set_get_macro_round_trip_dangerous() {
         if !pattern_found {
             return Err(format!(
                 "test pattern {:02X?} not found in GET_MACRO readback: {:02X?}",
-                test_pattern, &readback[..]
+                test_pattern,
+                &readback[..]
             ));
         }
 
@@ -973,11 +1006,11 @@ fn test_set_get_macro_round_trip_dangerous() {
         // Reconstruct SET_MACRO payload from original GET_MACRO response.
         // We write back the entire original response data as a single-page macro.
         let mut restore_payload = vec![0u8; 63];
-        restore_payload[0] = test_slot;       // macro_index
-        restore_payload[1] = 0;               // page = 0
-        let restore_len = 56usize;            // max chunk payload size
+        restore_payload[0] = test_slot; // macro_index
+        restore_payload[1] = 0; // page = 0
+        let restore_len = 56usize; // max chunk payload size
         restore_payload[2] = restore_len as u8; // chunk_len
-        restore_payload[3] = 1;               // is_last = true
+        restore_payload[3] = 1; // is_last = true
         // Copy original data starting after the header region of the GET response.
         // GET_MACRO response bytes 7..63 contain the macro payload data.
         restore_payload[7..7 + restore_len].copy_from_slice(&original_page0[7..7 + restore_len]);

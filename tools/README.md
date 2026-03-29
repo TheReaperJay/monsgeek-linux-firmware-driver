@@ -110,3 +110,18 @@ sudo GI_TYPELIB_PATH=/usr/lib64/girepository-1.0 python3 tools/compositor_tracer
 A window opens. Type in the window for 30+ seconds. Close the window or press Ctrl+C for the analysis.
 
 **Key findings from this tool:** Compositor adds p50=342us (fast), but p95=2476us and max=18ms. 12% of keystrokes are delayed 1-18ms by Mutter's frame-clock batching. This jitter, combined with switch bounce, is the root cause of perceived input lag. This finding justified the Phase 5.1 userspace input daemon.
+
+---
+
+## Service Smoke Test
+
+Use the service smoke mode when `monsgeek-driver.service` and `monsgeek-inputd.service` are managed by systemd:
+
+```bash
+bash tools/test.sh --service-smoke
+```
+
+What it checks:
+- `systemctl is-active monsgeek-driver.service`
+- `systemctl is-active monsgeek-inputd.service`
+- CLI smoke call: `monsgeek-cli info`

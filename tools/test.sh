@@ -26,6 +26,7 @@ MACRO_STRESS_ITERS="${MG_MACRO_STRESS_ITERS:-50}"
 MACRO_STRESS_READ_TIMEOUT="${MG_MACRO_READ_TIMEOUT_SEC:-1}"
 MACRO_MSG_A="${MG_MACRO_MSG_A:-CwAAOAE=}"
 MACRO_MSG_B="${MG_MACRO_MSG_B:-CwABOAE=}"
+SERVICE_SMOKE=0
 
 usage() {
     cat <<'EOF'
@@ -34,6 +35,7 @@ Usage: bash tools/test.sh [options]
 Options:
   --layer-stress           Run layer switch stress loop after smoke test
   --macro-stress           Run macro write stress loop after smoke test
+  --service-smoke          Check managed systemd services and run CLI smoke
   --iterations N           Layer stress iterations (default: 20)
   --read-timeout SEC       readMsg timeout seconds in stress mode (default: 1)
   --macro-iterations N     Macro stress iterations (default: 50)
@@ -62,6 +64,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --macro-stress)
             MACRO_STRESS=1
+            ;;
+        --service-smoke)
+            SERVICE_SMOKE=1
             ;;
         --iterations)
             shift
@@ -130,6 +135,21 @@ cleanup() {
 }
 
 trap cleanup EXIT
+
+if [[ "$SERVICE_SMOKE" == "1" ]]; then
+    for cmd in systemctl monsgeek-cli; do
+        require_cmd "$cmd" || exit 1
+    done
+
+    echo "==> Service smoke: verify active services"
+    systemctl is-active monsgeek-driver.service
+    systemctl is-active monsgeek-inputd.service
+
+    echo "==> Service smoke: CLI check"
+    monsgeek-cli info
+    echo "RESULT: PASS (service smoke)"
+    exit 0
+fi
 
 for cmd in cargo grpcurl rg timeout pkill; do
     require_cmd "$cmd" || exit 1

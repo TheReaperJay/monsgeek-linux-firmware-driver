@@ -26,8 +26,13 @@ pub struct FirmwareTarget {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FirmwareSource {
-    LocalFile { path: String },
-    VendorDownload { url: String, channel: Option<String> },
+    LocalFile {
+        path: String,
+    },
+    VendorDownload {
+        url: String,
+        channel: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,7 +56,9 @@ impl FirmwareManifest {
         Self::from_json_str(&raw)
     }
 
-    pub fn validate_compatibility_fields(&self) -> std::result::Result<(), ManifestValidationError> {
+    pub fn validate_compatibility_fields(
+        &self,
+    ) -> std::result::Result<(), ManifestValidationError> {
         if self.compatibility.expected_device_id.is_none() {
             return Err(ManifestValidationError::MissingExpectedDeviceId);
         }

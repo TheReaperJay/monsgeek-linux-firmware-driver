@@ -116,14 +116,12 @@ fn validate_key_and_layer(
     key_index: u16,
     layer: u8,
 ) -> Result<(), String> {
-    let max_keys = definition
-        .key_count
-        .ok_or_else(|| {
-            format!(
-                "bounds violation: key_index {} exceeds max 0, layer {} exceeds max 0",
-                key_index, layer
-            )
-        })? as u16;
+    let max_keys = definition.key_count.ok_or_else(|| {
+        format!(
+            "bounds violation: key_index {} exceeds max 0, layer {} exceeds max 0",
+            key_index, layer
+        )
+    })? as u16;
     let max_layers = definition.layer.ok_or_else(|| {
         format!(
             "bounds violation: key_index {} exceeds max {}, layer {} exceeds max 0",
@@ -226,7 +224,10 @@ pub fn evaluate_outbound_command(
             return OutboundCommandDecision::rejected(
                 class,
                 CommandPolicyErrorCode::InvalidArgument,
-                format!("SET_PROFILE profile {} exceeds max {}", profile, max_profile),
+                format!(
+                    "SET_PROFILE profile {} exceeds max {}",
+                    profile, max_profile
+                ),
             );
         }
     }
@@ -258,7 +259,10 @@ pub fn evaluate_outbound_command(
             return OutboundCommandDecision::rejected(
                 class,
                 CommandPolicyErrorCode::InvalidArgument,
-                format!("SET_KEYMATRIX profile {} exceeds max {}", profile, max_profile),
+                format!(
+                    "SET_KEYMATRIX profile {} exceeds max {}",
+                    profile, max_profile
+                ),
             );
         }
 
@@ -339,7 +343,10 @@ pub fn evaluate_outbound_command(
             return OutboundCommandDecision::rejected(
                 class,
                 CommandPolicyErrorCode::InvalidArgument,
-                format!("SET_FN_SIMPLE profile {} exceeds max {}", profile, max_profile),
+                format!(
+                    "SET_FN_SIMPLE profile {} exceeds max {}",
+                    profile, max_profile
+                ),
             );
         }
 
@@ -564,7 +571,10 @@ mod tests {
         let decision = evaluate_outbound_command(&def, &msg);
         let err = decision.error.expect("expected policy error");
         assert_eq!(err.code, CommandPolicyErrorCode::FailedPrecondition);
-        assert!(err.message.contains("missing required registry field: layer"));
+        assert!(
+            err.message
+                .contains("missing required registry field: layer")
+        );
     }
 
     #[test]
@@ -574,13 +584,19 @@ mod tests {
         let decision = evaluate_outbound_command(&def, &msg);
         let err = decision.error.expect("expected policy error");
         assert_eq!(err.code, CommandPolicyErrorCode::FailedPrecondition);
-        assert!(err.message.contains("missing required registry field: fnSysLayer"));
+        assert!(
+            err.message
+                .contains("missing required registry field: fnSysLayer")
+        );
     }
 
     #[test]
     fn normalize_simple_reset_pattern_rewrites_config() {
         let def = make_test_definition();
-        let cmd = def.commands().set_keymatrix_simple.expect("YiChip simple cmd");
+        let cmd = def
+            .commands()
+            .set_keymatrix_simple
+            .expect("YiChip simple cmd");
         let mut msg = vec![0u8; 64];
         msg[0] = cmd;
         msg[8] = 0;
