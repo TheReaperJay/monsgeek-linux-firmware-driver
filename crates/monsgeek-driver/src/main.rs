@@ -31,6 +31,7 @@ async fn main() -> Result<(), AnyError> {
     let service = DriverService::new_with_flags(DriverFlags {
         ota_enabled: enable_ota,
     });
+    service.start_background_discovery();
 
     tracing::info!("Starting monsgeek-driver on {}", addr);
     if enable_ota {

@@ -77,6 +77,7 @@ pub struct DriverService {
     opening_paths: Arc<Mutex<HashSet<String>>>,
     synthetic_reads: Arc<Mutex<HashMap<String, VecDeque<Vec<u8>>>>>,
     discovery_refreshing: Arc<AtomicBool>,
+    background_discovery_started: Arc<AtomicBool>,
     device_tx: broadcast::Sender<DeviceList>,
     db: DbStore,
     ota_enabled: bool,
@@ -109,6 +110,7 @@ impl DriverService {
             opening_paths: Arc::new(Mutex::new(HashSet::new())),
             synthetic_reads: Arc::new(Mutex::new(HashMap::new())),
             discovery_refreshing: Arc::new(AtomicBool::new(false)),
+            background_discovery_started: Arc::new(AtomicBool::new(false)),
             device_tx,
             db: DbStore::new(),
             ota_enabled: flags.ota_enabled,
@@ -117,6 +119,38 @@ impl DriverService {
 
     pub fn ota_enabled(&self) -> bool {
         self.ota_enabled
+    }
+
+    /// Start autonomous background discovery refresh.
+    ///
+    /// The bridge historically relied on client `watch_dev_list` subscriptions
+    /// to trigger discovery. That causes a cold-start dead zone where services
+    /// are running but no device is discovered until a client connects. This
+    /// loop removes that dependency: when there are no active connected devices,
+    /// it periodically queues discovery refresh attempts.
+    pub fn start_background_discovery(&self) {
+        if self
+            .background_discovery_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            // Trigger immediately on startup, then continue on interval.
+            service.queue_discovery_refresh();
+            loop {
+                interval.tick().await;
+                if service.connected_device_count() == 0 {
+                    service.queue_discovery_refresh();
+                }
+            }
+        });
     }
 
     /// Gracefully stop all active transport sessions and clear runtime state.
@@ -327,6 +361,10 @@ impl DriverService {
         }
 
         result
+    }
+
+    fn connected_device_count(&self) -> usize {
+        self.devices.lock().expect("devices map poisoned").len()
     }
 
     async fn scan_registrations_async(&self) -> Vec<DeviceRegistration> {

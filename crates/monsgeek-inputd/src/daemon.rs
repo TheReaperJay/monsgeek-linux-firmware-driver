@@ -37,6 +37,12 @@ pub struct DaemonConfig {
 /// Errors specific to daemon lifecycle operations.
 enum DaemonError {
     Disconnected,
+    PathHandoff {
+        bus: u8,
+        address: u8,
+        vid: u16,
+        pid: u16,
+    },
     Transport(TransportError),
     Io(std::io::Error),
 }
@@ -45,6 +51,16 @@ impl fmt::Display for DaemonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DaemonError::Disconnected => write!(f, "keyboard disconnected"),
+            DaemonError::PathHandoff {
+                bus,
+                address,
+                vid,
+                pid,
+            } => write!(
+                f,
+                "active input path moved to {:03}:{:03} (VID 0x{:04X} PID 0x{:04X})",
+                bus, address, vid, pid
+            ),
             DaemonError::Transport(e) => write!(f, "transport error: {}", e),
             DaemonError::Io(e) => write!(f, "I/O error: {}", e),
         }
@@ -75,6 +91,15 @@ const DISCONNECT_ERROR_THRESHOLD: u32 = 10;
 const ACTIVE_PATH_SELECTION_TTL: Duration = Duration::from_secs(20);
 /// Minimum interval between active-path marker refresh writes.
 const ACTIVE_PATH_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
+/// Silence window on current path before probing alternate candidates.
+const MODE_HANDOFF_SILENCE_THRESHOLD: Duration = Duration::from_millis(900);
+/// Limit probing to the period shortly after recent activity to avoid
+/// unnecessary ownership churn while the user is idle.
+const MODE_HANDOFF_ACTIVITY_WINDOW: Duration = Duration::from_secs(8);
+/// Minimum spacing between alternate-path probe attempts.
+const MODE_HANDOFF_RECHECK_INTERVAL: Duration = Duration::from_millis(750);
+/// Probe timeout for alternate-path read attempt.
+const MODE_HANDOFF_PROBE_TIMEOUT: Duration = Duration::from_millis(30);
 
 /// Path to the device registry JSON files relative to the binary's compile-time
 /// location. At runtime, the daemon resolves this from the cargo workspace root.
@@ -142,7 +167,7 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
                 .clone()
                 .unwrap_or_else(|| format!("{} (monsgeek-inputd)", device.display_name));
 
-            match try_connect_and_run(&config, &shutdown, &device, &uinput_name) {
+            match try_connect_and_run(&registry, &config, &shutdown, &device, &uinput_name) {
                 Ok(()) => return Ok(()), // Clean shutdown via signal
                 Err(e) => {
                     log::warn!(
@@ -151,6 +176,12 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
                         device.address,
                         e
                     );
+
+                    if let DaemonError::PathHandoff { bus, address, .. } = e {
+                        preferred_location = Some((bus, address));
+                        handled_disconnect = true;
+                        break;
+                    }
 
                     if matches!(e, DaemonError::Disconnected) {
                         preferred_location = Some((device.bus, device.address));
@@ -278,6 +309,7 @@ fn select_target_devices(
 /// Returns `Ok(())` on clean signal-initiated shutdown.
 /// Returns `Err(DaemonError::Disconnected)` when the keyboard is unplugged.
 fn try_connect_and_run(
+    registry: &DeviceRegistry,
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
     device: &DeviceInfo,
@@ -305,6 +337,8 @@ fn try_connect_and_run(
     let mut report = [0u8; 8];
     let mut last_watchdog = Instant::now();
     let mut last_active_publish = Instant::now() - ACTIVE_PATH_PUBLISH_INTERVAL;
+    let mut last_report_at = Instant::now();
+    let mut last_handoff_probe_at = Instant::now() - MODE_HANDOFF_RECHECK_INTERVAL;
     let mut consecutive_errors: u32 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -317,6 +351,7 @@ fn try_connect_and_run(
         match session.read_report_with_timeout(&mut report, Duration::from_millis(10)) {
             Ok(n) if n >= 8 => {
                 consecutive_errors = 0;
+                last_report_at = Instant::now();
                 if last_active_publish.elapsed() >= ACTIVE_PATH_PUBLISH_INTERVAL {
                     publish_active_path_for_device(device);
                     last_active_publish = Instant::now();
@@ -333,6 +368,37 @@ fn try_connect_and_run(
             Ok(_) => {
                 // Timeout or short read — endpoint is alive, reset error counter
                 consecutive_errors = 0;
+                let silence = last_report_at.elapsed();
+                if silence >= MODE_HANDOFF_SILENCE_THRESHOLD
+                    && silence <= MODE_HANDOFF_ACTIVITY_WINDOW
+                    && last_handoff_probe_at.elapsed() >= MODE_HANDOFF_RECHECK_INTERVAL
+                {
+                    last_handoff_probe_at = Instant::now();
+                    if let Some(alternate) =
+                        detect_alternate_active_path(registry, config, device)
+                    {
+                        log::warn!(
+                            "No IF0 reports on {:03}:{:03}; detected active input on alternate path {:03}:{:03} (VID 0x{:04X} PID 0x{:04X}). Switching.",
+                            device.bus,
+                            device.address,
+                            alternate.bus,
+                            alternate.address,
+                            alternate.vid,
+                            alternate.pid
+                        );
+                        let release_actions = processor.release_all_keys();
+                        let _ = emit_actions(&mut uinput_dev, &release_actions);
+                        drop(uinput_dev);
+                        drop(session);
+                        clear_active_path_marker();
+                        return Err(DaemonError::PathHandoff {
+                            bus: alternate.bus,
+                            address: alternate.address,
+                            vid: alternate.vid,
+                            pid: alternate.pid,
+                        });
+                    }
+                }
             }
             Err(TransportError::Disconnected) => {
                 log::warn!("Keyboard disconnected");
@@ -369,6 +435,53 @@ fn try_connect_and_run(
     clear_active_path_marker();
     // uinput_dev and session are dropped here, releasing resources
     Ok(())
+}
+
+fn detect_alternate_active_path(
+    registry: &DeviceRegistry,
+    config: &DaemonConfig,
+    current: &DeviceInfo,
+) -> Option<DeviceInfo> {
+    // Only attempt mode handoff when current path is an alias PID. Canonical
+    // paths stay pinned unless they truly disconnect.
+    let current_is_alias = registry.find_by_vid_pid(current.vid, current.pid).is_empty();
+    if !current_is_alias {
+        return None;
+    }
+
+    let candidates = find_target_devices(registry, config.device_filter, None).ok()?;
+    for candidate in candidates {
+        if candidate.bus == current.bus && candidate.address == current.address {
+            continue;
+        }
+
+        // Probe only canonical targets as handoff destinations.
+        if registry
+            .find_by_vid_pid(candidate.vid, candidate.pid)
+            .is_empty()
+        {
+            continue;
+        }
+
+        let session = match UsbSession::open_at_with_mode(
+            candidate.bus,
+            candidate.address,
+            SessionMode::InputOnly,
+        ) {
+            Ok(session) => session,
+            Err(_) => continue,
+        };
+
+        let mut report = [0u8; 8];
+        if matches!(
+            session.read_report_with_timeout(&mut report, MODE_HANDOFF_PROBE_TIMEOUT),
+            Ok(n) if n >= 8
+        ) {
+            return Some(candidate);
+        }
+    }
+
+    None
 }
 
 fn device_matches_active_path(device: &DeviceInfo, active: &ActivePathState) -> bool {
