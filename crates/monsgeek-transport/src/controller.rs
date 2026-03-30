@@ -73,6 +73,32 @@ impl CommandController {
         UsbVersionInfo::parse(&response)
     }
 
+    pub(crate) fn query_usb_version_discovery(&mut self) -> Result<UsbVersionInfo, TransportError> {
+        self.enforce_inter_command_delay();
+        let response = flow_control::query_command_discovery(
+            &self.session,
+            cmd::GET_USB_VERSION,
+            &[],
+            ChecksumType::Bit7,
+        )?;
+        self.last_command_at = Instant::now();
+        UsbVersionInfo::parse(&response)
+    }
+
+    pub(crate) fn query_usb_version_discovery_dongle(
+        &mut self,
+    ) -> Result<UsbVersionInfo, TransportError> {
+        self.enforce_inter_command_delay();
+        let response = flow_control::query_command_discovery_dongle(
+            &self.session,
+            cmd::GET_USB_VERSION,
+            &[],
+            ChecksumType::Bit7,
+        )?;
+        self.last_command_at = Instant::now();
+        UsbVersionInfo::parse(&response)
+    }
+
     fn enforce_inter_command_delay(&self) {
         let elapsed = self.last_command_at.elapsed();
         let required = Duration::from_millis(timing::DEFAULT_DELAY_MS);

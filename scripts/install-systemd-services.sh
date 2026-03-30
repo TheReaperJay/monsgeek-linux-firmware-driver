@@ -9,6 +9,7 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
 REGISTRY_INSTALL_DIR="/usr/share/monsgeek/protocol/devices"
+CONFIG_INSTALL_DIR="/etc/monsgeek"
 
 for cmd in cp systemctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -24,6 +25,10 @@ cp "$ROOT_DIR/deploy/systemd/monsgeek-inputd.service" "$SYSTEMD_DIR/monsgeek-inp
 echo "==> Installing device registry files"
 mkdir -p "$REGISTRY_INSTALL_DIR"
 cp -a "$ROOT_DIR/crates/monsgeek-protocol/devices/." "$REGISTRY_INSTALL_DIR/"
+
+echo "==> Installing transport runtime config"
+mkdir -p "$CONFIG_INSTALL_DIR"
+cp "$ROOT_DIR/deploy/config/transport-config.json" "$CONFIG_INSTALL_DIR/transport-config.json"
 
 echo "==> Reloading systemd daemon"
 systemctl daemon-reload

@@ -5,16 +5,20 @@
 //! with VID, PID, device ID, display name, internal name, and USB bus location.
 
 use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use monsgeek_protocol::{DeviceDefinition, DeviceRegistry};
 use rusb::UsbContext;
+use serde::Serialize;
 
+use crate::active_path::{self, ActivePathState};
 use crate::controller::CommandController;
 use crate::error::TransportError;
 use crate::usb::UsbSession;
 
 /// Information about a discovered MonsGeek keyboard.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DeviceInfo {
     /// USB Vendor ID (from device registry JSON).
     pub vid: u16,
@@ -40,6 +44,55 @@ pub(crate) struct UsbCandidate {
     pub address: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ProbeStrategy {
+    Canonical,
+    AliasDongle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ProbeOutcome {
+    Identified,
+    OpenFailed,
+    QueryFailed,
+    RecoveryFailed,
+    UnknownDeviceId,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeAttempt {
+    pub vid: u16,
+    pub pid: u16,
+    pub bus: u8,
+    pub address: u8,
+    pub strategy: ProbeStrategy,
+    pub outcome: ProbeOutcome,
+    pub resolved_device_id: Option<i32>,
+    pub error: Option<String>,
+    pub recovery_attempted: bool,
+    pub duration_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeReport {
+    pub active_hint: Option<ActivePathState>,
+    pub attempts: Vec<ProbeAttempt>,
+    pub found: Vec<DeviceInfo>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProbeTarget {
+    candidate: UsbCandidate,
+    strategy: ProbeStrategy,
+}
+
+struct ProbeCandidateResult {
+    attempt: ProbeAttempt,
+    info: Option<DeviceInfo>,
+}
+
+const ACTIVE_PATH_TTL: Duration = Duration::from_secs(20);
+
 /// Enumerate connected USB devices and resolve them by firmware device ID.
 ///
 /// This API is retained for compatibility, but identity resolution is delegated
@@ -57,7 +110,7 @@ pub fn enumerate_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, T
 ///
 /// Use this for callers that open the device themselves (e.g., in
 /// `SessionMode::InputOnly`) and cannot tolerate IF2 claims, vendor commands,
-/// or STALL recovery resets that [`probe_devices`] performs.
+/// or any firmware command traffic that [`probe_devices`] performs.
 pub fn find_devices_no_probe(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, TransportError> {
     if registry.is_empty() {
         return Ok(Vec::new());
@@ -110,24 +163,67 @@ pub fn find_devices_no_probe(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo
 /// Unlike [`enumerate_devices`], this function does not trust USB PID alone.
 /// It opens each candidate USB device for supported vendor IDs, sends
 /// `GET_USB_VERSION`, and maps the returned firmware device ID back into the
-/// registry. This is slower and may reset candidate devices, but it can still
+/// registry. This is slower than descriptor-only discovery, but it can still
 /// identify keyboards whose runtime PID differs from the registry's primary PID.
 pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, TransportError> {
+    Ok(probe_devices_with_report(registry)?.found)
+}
+
+pub fn probe_devices_with_report(registry: &DeviceRegistry) -> Result<ProbeReport, TransportError> {
     if registry.is_empty() {
-        return Ok(Vec::new());
+        let report = ProbeReport {
+            active_hint: None,
+            attempts: Vec::new(),
+            found: Vec::new(),
+        };
+        set_last_probe_report(&report);
+        return Ok(report);
     }
 
-    let vendor_ids: HashSet<u16> = registry.all_devices().map(|device| device.vid).collect();
+    let mut vendor_ids: Vec<u16> = registry
+        .all_devices()
+        .map(|device| device.vid)
+        .collect::<HashSet<u16>>()
+        .into_iter()
+        .collect();
+    vendor_ids.sort_unstable();
+
+    let active_hint = active_path::read_active_path(ACTIVE_PATH_TTL);
+    if let Some(active) = active_hint.as_ref() {
+        log::debug!(
+            "probe_devices: active hint {:03}:{:03} VID 0x{:04X} PID 0x{:04X}",
+            active.bus,
+            active.address,
+            active.vid,
+            active.pid
+        );
+    } else {
+        log::debug!("probe_devices: no fresh active path hint");
+    }
+
+    let mut attempts = Vec::new();
     let mut found = Vec::new();
 
     for vid in vendor_ids {
+        let active_for_vid = active_hint
+            .as_ref()
+            .filter(|state| state.vid == vid)
+            .cloned();
+        let mut canonical_candidates = Vec::new();
+        let mut alias_candidates = Vec::new();
+
         for candidate in enumerate_usb_candidates(vid)? {
-            // Only probe runtime PIDs that exist in the registry. Scanning every
-            // same-VID interface (e.g. dongle/wired side endpoints) causes
-            // avoidable STALL recovery resets and can hide valid devices.
+            log::info!(
+                "probe_candidate_seen bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X}",
+                candidate.bus,
+                candidate.address,
+                candidate.vid,
+                candidate.pid
+            );
+            // Only probe runtime PIDs that exist in the registry.
             if !registry_supports_candidate(registry, candidate) {
-                log::debug!(
-                    "Probe skipped bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): not in registry",
+                log::info!(
+                    "probe_candidate_skipped_not_in_registry bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X}",
                     candidate.bus,
                     candidate.address,
                     candidate.vid,
@@ -136,76 +232,407 @@ pub fn probe_devices(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo>, Trans
                 continue;
             }
 
-            let session = match UsbSession::open_at(candidate.bus, candidate.address) {
-                Ok(session) => session,
-                Err(err) => {
-                    log::warn!(
-                        "Probe open failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
-                        candidate.bus,
-                        candidate.address,
-                        candidate.vid,
-                        candidate.pid,
-                        err
-                    );
-                    continue;
-                }
-            };
-
-            let mut controller = CommandController::new(session);
-            let usb_version = match controller.query_usb_version() {
-                Ok(info) => info,
-                Err(first_err) => {
-                    log::debug!(
-                        "Probe query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {} — attempting STALL recovery",
-                        candidate.bus,
-                        candidate.address,
-                        candidate.vid,
-                        candidate.pid,
-                        first_err
-                    );
-                    match controller
-                        .into_session()
-                        .reset_and_reopen()
-                        .and_then(|session| CommandController::new(session).query_usb_version())
-                    {
-                        Ok(info) => info,
-                        Err(retry_err) => {
-                            // Discovery identity is authoritative only when
-                            // GET_USB_VERSION succeeds.
-                            log::debug!(
-                                "Probe query recovery failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
-                                candidate.bus,
-                                candidate.address,
-                                candidate.vid,
-                                candidate.pid,
-                                retry_err
-                            );
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
-                log::debug!(
-                    "Probe bus {} addr {} reported unknown device ID {}",
+            if registry_has_canonical_pid(registry, candidate) {
+                log::info!(
+                    "probe_candidate_classified bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X} class=canonical",
                     candidate.bus,
                     candidate.address,
-                    usb_version.device_id
+                    candidate.vid,
+                    candidate.pid
+                );
+                canonical_candidates.push(candidate);
+            } else {
+                log::info!(
+                    "probe_candidate_classified bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X} class=alias_dongle",
+                    candidate.bus,
+                    candidate.address,
+                    candidate.vid,
+                    candidate.pid
+                );
+                alias_candidates.push(candidate);
+            }
+        }
+
+        sort_candidates_by_active_hint(&mut canonical_candidates, active_for_vid.as_ref());
+        sort_candidates_by_active_hint(&mut alias_candidates, active_for_vid.as_ref());
+
+        let targets = build_probe_targets(
+            &canonical_candidates,
+            &alias_candidates,
+            active_for_vid.as_ref(),
+        );
+
+        log::info!(
+            "probe_devices: VID 0x{:04X} canonical={} alias={} targets={}",
+            vid,
+            canonical_candidates.len(),
+            alias_candidates.len(),
+            targets.len()
+        );
+
+        let mut canonical_identified_for_vid = false;
+        for target in targets {
+            if canonical_identified_for_vid && target.strategy == ProbeStrategy::AliasDongle {
+                log::info!(
+                    "probe_target_skipped bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X} strategy={:?} reason=canonical_already_identified_for_vid",
+                    target.candidate.bus,
+                    target.candidate.address,
+                    target.candidate.vid,
+                    target.candidate.pid,
+                    target.strategy
                 );
                 continue;
-            };
-
-            found.push(device_info_from_definition(definition, candidate));
+            }
+            log::info!(
+                "probe_target_selected bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X} strategy={:?}",
+                target.candidate.bus,
+                target.candidate.address,
+                target.candidate.vid,
+                target.candidate.pid,
+                target.strategy
+            );
+            let result = probe_candidate_identity(registry, target.candidate, target.strategy);
+            if result.info.is_some() && target.strategy == ProbeStrategy::Canonical {
+                canonical_identified_for_vid = true;
+            }
+            attempts.push(result.attempt);
+            if let Some(info) = result.info {
+                found.push(info);
+            }
         }
     }
 
     found.sort_by_key(|info| (info.bus, info.address, info.vid, info.pid));
-    Ok(found)
+    found.dedup_by_key(|info| (info.bus, info.address, info.vid, info.pid, info.device_id));
+    let report = ProbeReport {
+        active_hint,
+        attempts,
+        found,
+    };
+    set_last_probe_report(&report);
+    Ok(report)
+}
+
+fn probe_candidate_identity(
+    registry: &DeviceRegistry,
+    candidate: UsbCandidate,
+    strategy: ProbeStrategy,
+) -> ProbeCandidateResult {
+    let started = Instant::now();
+
+    let session = match UsbSession::open_at(candidate.bus, candidate.address) {
+        Ok(session) => session,
+        Err(err) => {
+            log::warn!(
+                "Probe open failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) strategy={:?}: {}",
+                candidate.bus,
+                candidate.address,
+                candidate.vid,
+                candidate.pid,
+                strategy,
+                err
+            );
+            return ProbeCandidateResult {
+                attempt: finalize_attempt(
+                    candidate,
+                    strategy,
+                    ProbeOutcome::OpenFailed,
+                    None,
+                    Some(err.to_string()),
+                    false,
+                    started,
+                ),
+                info: None,
+            };
+        }
+    };
+
+    let mut controller = CommandController::new(session);
+    let mut recovery_attempted = false;
+    let usb_version = match query_usb_version_for_candidate(&mut controller, strategy) {
+        Ok(info) => info,
+        Err(first_err) => {
+            log::debug!(
+                "Probe query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) strategy={:?}: {}",
+                candidate.bus,
+                candidate.address,
+                candidate.vid,
+                candidate.pid,
+                strategy,
+                first_err
+            );
+            if !should_attempt_stall_recovery(&first_err, strategy) {
+                return ProbeCandidateResult {
+                    attempt: finalize_attempt(
+                        candidate,
+                        strategy,
+                        ProbeOutcome::QueryFailed,
+                        None,
+                        Some(first_err.to_string()),
+                        false,
+                        started,
+                    ),
+                    info: None,
+                };
+            }
+            recovery_attempted = true;
+
+            log::debug!(
+                "Probe query hit stall-like USB error, attempting one reset/reopen recovery bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) strategy={:?}",
+                candidate.bus,
+                candidate.address,
+                candidate.vid,
+                candidate.pid,
+                strategy,
+            );
+
+            let recovered = match controller.into_session().reset_and_reopen() {
+                Ok(session) => session,
+                Err(reset_err) => {
+                    log::debug!(
+                        "Probe recovery reset/reopen failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                        candidate.bus,
+                        candidate.address,
+                        candidate.vid,
+                        candidate.pid,
+                        reset_err
+                    );
+                    return ProbeCandidateResult {
+                        attempt: finalize_attempt(
+                            candidate,
+                            strategy,
+                            ProbeOutcome::RecoveryFailed,
+                            None,
+                            Some(reset_err.to_string()),
+                            true,
+                            started,
+                        ),
+                        info: None,
+                    };
+                }
+            };
+
+            let mut recovered_controller = CommandController::new(recovered);
+            match query_usb_version_for_candidate(&mut recovered_controller, strategy) {
+                Ok(info) => info,
+                Err(retry_err) => {
+                    log::debug!(
+                        "Probe recovery query failed bus {} addr {} (VID:0x{:04X} PID:0x{:04X}): {}",
+                        candidate.bus,
+                        candidate.address,
+                        candidate.vid,
+                        candidate.pid,
+                        retry_err
+                    );
+                    return ProbeCandidateResult {
+                        attempt: finalize_attempt(
+                            candidate,
+                            strategy,
+                            ProbeOutcome::RecoveryFailed,
+                            None,
+                            Some(retry_err.to_string()),
+                            true,
+                            started,
+                        ),
+                        info: None,
+                    };
+                }
+            }
+        }
+    };
+
+    let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
+        log::debug!(
+            "Probe bus {} addr {} (VID:0x{:04X} PID:0x{:04X}) strategy={:?} reported unknown device ID {}",
+            candidate.bus,
+            candidate.address,
+            candidate.vid,
+            candidate.pid,
+            strategy,
+            usb_version.device_id
+        );
+        return ProbeCandidateResult {
+            attempt: finalize_attempt(
+                candidate,
+                strategy,
+                ProbeOutcome::UnknownDeviceId,
+                None,
+                Some(format!("unknown device id {}", usb_version.device_id)),
+                recovery_attempted,
+                started,
+            ),
+            info: None,
+        };
+    };
+
+    let info = device_info_from_definition(definition, candidate);
+    ProbeCandidateResult {
+        attempt: finalize_attempt(
+            candidate,
+            strategy,
+            ProbeOutcome::Identified,
+            Some(info.device_id),
+            None,
+            recovery_attempted,
+            started,
+        ),
+        info: Some(info),
+    }
 }
 
 fn registry_supports_candidate(registry: &DeviceRegistry, candidate: UsbCandidate) -> bool {
     registry.supports_runtime_vid_pid(candidate.vid, candidate.pid)
+}
+
+fn registry_has_canonical_pid(registry: &DeviceRegistry, candidate: UsbCandidate) -> bool {
+    !registry
+        .find_by_vid_pid(candidate.vid, candidate.pid)
+        .is_empty()
+}
+
+fn sort_candidates_by_active_hint(
+    candidates: &mut [UsbCandidate],
+    active: Option<&ActivePathState>,
+) {
+    candidates.sort_by_key(|candidate| {
+        (
+            active.is_none_or(|state| !candidate_matches_active_path(*candidate, state)),
+            candidate.bus,
+            candidate.address,
+            candidate.pid,
+        )
+    });
+}
+
+fn build_probe_targets(
+    canonical_candidates: &[UsbCandidate],
+    alias_candidates: &[UsbCandidate],
+    active: Option<&ActivePathState>,
+) -> Vec<ProbeTarget> {
+    let alias_first = active.is_some_and(|state| candidate_list_contains(alias_candidates, state));
+    let mut targets = Vec::with_capacity(canonical_candidates.len() + alias_candidates.len());
+
+    if alias_first {
+        targets.extend(
+            alias_candidates
+                .iter()
+                .copied()
+                .map(|candidate| ProbeTarget {
+                    candidate,
+                    strategy: ProbeStrategy::AliasDongle,
+                }),
+        );
+        targets.extend(
+            canonical_candidates
+                .iter()
+                .copied()
+                .map(|candidate| ProbeTarget {
+                    candidate,
+                    strategy: ProbeStrategy::Canonical,
+                }),
+        );
+    } else {
+        targets.extend(
+            canonical_candidates
+                .iter()
+                .copied()
+                .map(|candidate| ProbeTarget {
+                    candidate,
+                    strategy: ProbeStrategy::Canonical,
+                }),
+        );
+        targets.extend(
+            alias_candidates
+                .iter()
+                .copied()
+                .map(|candidate| ProbeTarget {
+                    candidate,
+                    strategy: ProbeStrategy::AliasDongle,
+                }),
+        );
+    }
+
+    targets
+}
+
+fn candidate_matches_active_path(candidate: UsbCandidate, state: &ActivePathState) -> bool {
+    candidate.bus == state.bus
+        && candidate.address == state.address
+        && candidate.vid == state.vid
+        && candidate.pid == state.pid
+}
+
+fn candidate_list_contains(candidates: &[UsbCandidate], state: &ActivePathState) -> bool {
+    candidates
+        .iter()
+        .copied()
+        .any(|candidate| candidate_matches_active_path(candidate, state))
+}
+
+fn should_attempt_stall_recovery(err: &TransportError, strategy: ProbeStrategy) -> bool {
+    match err {
+        TransportError::Usb(message) => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("pipe") || lower.contains("timeout") || lower.contains("timed out")
+        }
+        // Dongle alias paths can return repeated zero-echo placeholders while IF2 is
+        // in a bad state. Treat this as recoverable once via reset/reopen.
+        TransportError::EchoMismatch { actual, .. } => {
+            strategy == ProbeStrategy::AliasDongle && *actual == 0x00
+        }
+        _ => false,
+    }
+}
+
+fn query_usb_version_for_candidate(
+    controller: &mut CommandController,
+    strategy: ProbeStrategy,
+) -> Result<crate::usb::UsbVersionInfo, TransportError> {
+    match strategy {
+        ProbeStrategy::Canonical => controller.query_usb_version_discovery(),
+        ProbeStrategy::AliasDongle => controller.query_usb_version_discovery_dongle(),
+    }
+}
+
+fn finalize_attempt(
+    candidate: UsbCandidate,
+    strategy: ProbeStrategy,
+    outcome: ProbeOutcome,
+    resolved_device_id: Option<i32>,
+    error: Option<String>,
+    recovery_attempted: bool,
+    started: Instant,
+) -> ProbeAttempt {
+    ProbeAttempt {
+        vid: candidate.vid,
+        pid: candidate.pid,
+        bus: candidate.bus,
+        address: candidate.address,
+        strategy,
+        outcome,
+        resolved_device_id,
+        error,
+        recovery_attempted,
+        duration_ms: started.elapsed().as_millis(),
+    }
+}
+
+fn probe_report_store() -> &'static Mutex<Option<ProbeReport>> {
+    static LAST_PROBE_REPORT: OnceLock<Mutex<Option<ProbeReport>>> = OnceLock::new();
+    LAST_PROBE_REPORT.get_or_init(|| Mutex::new(None))
+}
+
+fn set_last_probe_report(report: &ProbeReport) {
+    *probe_report_store()
+        .lock()
+        .expect("probe report mutex poisoned") = Some(report.clone());
+}
+
+pub fn last_probe_report() -> Option<ProbeReport> {
+    probe_report_store()
+        .lock()
+        .expect("probe report mutex poisoned")
+        .clone()
 }
 
 #[cfg(test)]
@@ -265,31 +692,25 @@ pub fn probe_device_at(
         return Ok(None);
     }
 
-    let session = UsbSession::open_at(candidate.bus, candidate.address)?;
-    let mut controller = CommandController::new(session);
-    let usb_version = match controller.query_usb_version() {
-        Ok(info) => info,
-        Err(first_err) => {
-            log::debug!(
-                "probe_device_at: query failed bus {} addr {}: {}",
-                bus,
-                address,
-                first_err
-            );
-            return Ok(None);
-        }
-    };
-    let Some(definition) = registry.find_by_id(usb_version.device_id_i32()) else {
-        log::debug!(
-            "Probe bus {} addr {} reported unknown device ID {}",
-            candidate.bus,
-            candidate.address,
-            usb_version.device_id
-        );
-        return Ok(None);
+    let strategy = if registry_has_canonical_pid(registry, candidate) {
+        ProbeStrategy::Canonical
+    } else {
+        ProbeStrategy::AliasDongle
     };
 
-    Ok(Some(device_info_from_definition(definition, candidate)))
+    let result = probe_candidate_identity(registry, candidate, strategy);
+    if result.info.is_none() {
+        log::debug!(
+            "probe_device_at: bus {} addr {} strategy={:?} outcome={:?} err={}",
+            bus,
+            address,
+            result.attempt.strategy,
+            result.attempt.outcome,
+            result.attempt.error.as_deref().unwrap_or("n/a")
+        );
+    }
+
+    Ok(result.info)
 }
 
 pub(crate) fn probe_device(device: &DeviceDefinition) -> Result<DeviceInfo, TransportError> {
@@ -570,5 +991,54 @@ mod tests {
         let matched =
             super::unique_runtime_match(&registry, candidate).expect("should match alias");
         assert_eq!(matched.id, 1308);
+    }
+
+    #[test]
+    fn build_probe_targets_keeps_alias_when_canonical_exists() {
+        let canonical = [UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4015,
+            bus: 3,
+            address: 10,
+        }];
+        let alias = [UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4011,
+            bus: 3,
+            address: 11,
+        }];
+
+        let targets = build_probe_targets(&canonical, &alias, None);
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].strategy, ProbeStrategy::Canonical);
+        assert_eq!(targets[1].strategy, ProbeStrategy::AliasDongle);
+    }
+
+    #[test]
+    fn build_probe_targets_prefers_alias_when_active_hint_matches_alias() {
+        let canonical = [UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4015,
+            bus: 3,
+            address: 10,
+        }];
+        let alias = [UsbCandidate {
+            vid: 0x3151,
+            pid: 0x4011,
+            bus: 3,
+            address: 11,
+        }];
+        let active = ActivePathState {
+            bus: 3,
+            address: 11,
+            vid: 0x3151,
+            pid: 0x4011,
+            updated_at_unix_ms: 0,
+        };
+
+        let targets = build_probe_targets(&canonical, &alias, Some(&active));
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].strategy, ProbeStrategy::AliasDongle);
+        assert_eq!(targets[1].strategy, ProbeStrategy::Canonical);
     }
 }

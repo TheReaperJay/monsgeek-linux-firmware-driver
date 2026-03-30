@@ -19,6 +19,7 @@
 //!                                     [UsbSession (mode-selected interfaces)]
 //! ```
 
+pub mod active_path;
 pub mod bounds;
 mod controller;
 pub mod discovery;
@@ -27,11 +28,15 @@ mod flow_control;
 pub mod input;
 pub mod keycodes;
 pub mod keymap;
+mod runtime_config;
 pub mod thread;
 pub mod usb;
 
 pub use bounds::{validate_key_index, validate_write_request};
-pub use discovery::DeviceInfo;
+pub use discovery::{
+    DeviceInfo, ProbeAttempt, ProbeOutcome, ProbeReport, ProbeStrategy, last_probe_report,
+    probe_devices_with_report,
+};
 pub use error::TransportError;
 pub use input::InputProcessor;
 pub use thread::TransportEvent;

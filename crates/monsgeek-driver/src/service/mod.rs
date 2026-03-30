@@ -5,6 +5,7 @@ mod firmware_update;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use monsgeek_protocol::{
     CommandReadPolicy, DeviceDefinition, DeviceRegistry, evaluate_outbound_command,
     normalize_outbound_command,
 };
-use monsgeek_transport::discovery::DeviceInfo;
+use monsgeek_transport::discovery::{DeviceInfo, ProbeOutcome, ProbeReport, ProbeStrategy};
 use monsgeek_transport::{
     TransportEvent, TransportHandle, TransportOptions, connect_at_with_options,
 };
@@ -75,6 +76,7 @@ pub struct DriverService {
     path_registry: Arc<Mutex<DevicePathRegistry>>,
     opening_paths: Arc<Mutex<HashSet<String>>>,
     synthetic_reads: Arc<Mutex<HashMap<String, VecDeque<Vec<u8>>>>>,
+    discovery_refreshing: Arc<AtomicBool>,
     device_tx: broadcast::Sender<DeviceList>,
     db: DbStore,
     ota_enabled: bool,
@@ -106,6 +108,7 @@ impl DriverService {
             path_registry: Arc::new(Mutex::new(DevicePathRegistry::new())),
             opening_paths: Arc::new(Mutex::new(HashSet::new())),
             synthetic_reads: Arc::new(Mutex::new(HashMap::new())),
+            discovery_refreshing: Arc::new(AtomicBool::new(false)),
             device_tx,
             db: DbStore::new(),
             ota_enabled: flags.ota_enabled,
@@ -206,12 +209,105 @@ impl DriverService {
     }
 
     fn discover_selected_infos(&self) -> Vec<DeviceInfo> {
-        match monsgeek_transport::discovery::probe_devices(&self.registry) {
-            Ok(found) => found,
+        match monsgeek_transport::discovery::probe_devices_with_report(&self.registry) {
+            Ok(report) => {
+                self.log_probe_report(&report);
+                report.found
+            }
             Err(err) => {
                 tracing::warn!("firmware-ID probe failed: {}", err);
                 Vec::new()
             }
+        }
+    }
+
+    fn log_probe_report(&self, report: &ProbeReport) {
+        let mut identified = 0usize;
+        let mut open_failed = 0usize;
+        let mut query_failed = 0usize;
+        let mut recovery_failed = 0usize;
+        let mut unknown_id = 0usize;
+
+        for attempt in &report.attempts {
+            match attempt.outcome {
+                ProbeOutcome::Identified => identified += 1,
+                ProbeOutcome::OpenFailed => open_failed += 1,
+                ProbeOutcome::QueryFailed => query_failed += 1,
+                ProbeOutcome::RecoveryFailed => recovery_failed += 1,
+                ProbeOutcome::UnknownDeviceId => unknown_id += 1,
+            }
+        }
+
+        tracing::info!(
+            "probe_summary attempts={} identified={} open_failed={} query_failed={} recovery_failed={} unknown_id={} found={} active_hint={}",
+            report.attempts.len(),
+            identified,
+            open_failed,
+            query_failed,
+            recovery_failed,
+            unknown_id,
+            report.found.len(),
+            report
+                .active_hint
+                .as_ref()
+                .map(|h| format!(
+                    "{:03}:{:03}/0x{:04X}:0x{:04X}",
+                    h.bus, h.address, h.vid, h.pid
+                ))
+                .unwrap_or_else(|| "none".to_string()),
+        );
+
+        for attempt in &report.attempts {
+            let strategy = match attempt.strategy {
+                ProbeStrategy::Canonical => "canonical",
+                ProbeStrategy::AliasDongle => "alias_dongle",
+            };
+            let outcome = match attempt.outcome {
+                ProbeOutcome::Identified => "identified",
+                ProbeOutcome::OpenFailed => "open_failed",
+                ProbeOutcome::QueryFailed => "query_failed",
+                ProbeOutcome::RecoveryFailed => "recovery_failed",
+                ProbeOutcome::UnknownDeviceId => "unknown_device_id",
+            };
+            tracing::info!(
+                "probe_attempt bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X} strategy={} outcome={} recovery_attempted={} duration_ms={} resolved_device_id={} err={}",
+                attempt.bus,
+                attempt.address,
+                attempt.vid,
+                attempt.pid,
+                strategy,
+                outcome,
+                attempt.recovery_attempted,
+                attempt.duration_ms,
+                attempt
+                    .resolved_device_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                attempt.error.as_deref().unwrap_or("n/a"),
+            );
+
+            if attempt.strategy == ProbeStrategy::Canonical
+                && attempt.outcome == ProbeOutcome::OpenFailed
+                && attempt
+                    .error
+                    .as_deref()
+                    .is_some_and(|err| err.to_ascii_lowercase().contains("resource busy"))
+            {
+                tracing::warn!(
+                    "wired_recovery_hint bus={:03} addr={:03} vid=0x{:04X} pid=0x{:04X}: wired keyboard interface is busy. Disconnect and reconnect the wired keyboard cable, then re-run discovery. (Dongle mode does not require this step.)",
+                    attempt.bus,
+                    attempt.address,
+                    attempt.vid,
+                    attempt.pid
+                );
+            }
+        }
+
+        if report.found.is_empty() && !report.attempts.is_empty() {
+            tracing::warn!(
+                "probe_summary_empty_no_devices: attempted={} (see probe_attempt lines above)",
+                report.attempts.len()
+            );
         }
     }
 
@@ -233,21 +329,52 @@ impl DriverService {
         result
     }
 
-    /// Discovery path used by `watchDevList`.
-    ///
-    /// Returns already-connected devices first (from live transport sessions),
-    /// then probes USB for any new devices not yet connected. This avoids
-    /// re-probing devices whose IF2 is already claimed by a running transport,
-    /// which would fail and hide the device from subsequent subscribers.
-    async fn scan_devices(&self) -> Vec<DjDev> {
-        // Start with devices that already have a running transport.
-        let mut result: Vec<DjDev> = {
+    async fn scan_registrations_async(&self) -> Vec<DeviceRegistration> {
+        let service = self.clone();
+        match tokio::task::spawn_blocking(move || service.scan_registrations()).await {
+            Ok(registrations) => registrations,
+            Err(err) => {
+                tracing::warn!("scan_registrations task join failed: {}", err);
+                Vec::new()
+            }
+        }
+    }
+
+    fn snapshot_known_devices(&self) -> Vec<DjDev> {
+        let connected: Vec<ConnectedDevice> = {
             let devices = self.devices.lock().expect("devices map poisoned");
-            devices
-                .values()
-                .map(|connected| device_to_djdev(connected, true))
-                .collect()
+            devices.values().cloned().collect()
         };
+        let connected_locations: std::collections::HashSet<(u8, u8)> = connected
+            .iter()
+            .map(|device| (device.registration.bus, device.registration.address))
+            .collect();
+
+        let mut result: Vec<DjDev> = connected
+            .iter()
+            .map(|connected| device_to_djdev(connected, true))
+            .collect();
+
+        let registrations = self
+            .path_registry
+            .lock()
+            .expect("path registry poisoned")
+            .all_registrations();
+        for registration in registrations {
+            if connected_locations.contains(&(registration.bus, registration.address)) {
+                continue;
+            }
+            let canonical_pid = self
+                .registry
+                .find_by_id(registration.device_id)
+                .map(|definition| definition.pid);
+            result.push(registration_to_djdev(registration, canonical_pid));
+        }
+        result
+    }
+
+    async fn refresh_discovery_snapshot(&self) {
+        let registrations = self.scan_registrations_async().await;
 
         let connected_locations: std::collections::HashSet<(u8, u8)> = {
             let devices = self.devices.lock().expect("devices map poisoned");
@@ -257,18 +384,28 @@ impl DriverService {
                 .collect()
         };
 
-        // Probe USB for devices not yet connected.
-        for registration in self.scan_registrations() {
-            if !connected_locations.contains(&(registration.bus, registration.address)) {
-                let canonical_pid = self
-                    .registry
-                    .find_by_id(registration.device_id)
-                    .map(|definition| definition.pid);
-                result.push(registration_to_djdev(registration, canonical_pid));
+        for registration in registrations {
+            if connected_locations.contains(&(registration.bus, registration.address)) {
+                continue;
             }
+            self.connect_registration(registration, true);
+        }
+    }
+
+    fn queue_discovery_refresh(&self) {
+        if self
+            .discovery_refreshing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
         }
 
-        result
+        let service = self.clone();
+        tokio::spawn(async move {
+            service.refresh_discovery_snapshot().await;
+            service.discovery_refreshing.store(false, Ordering::Release);
+        });
     }
 
     fn spawn_transport_event_loop(
@@ -404,13 +541,17 @@ impl DriverService {
             .lock()
             .expect("path registry poisoned")
             .all_registrations();
-        let registration = resolve_registration_for_path(path, &cached_registrations)
-            .or_else(|| {
-                // Fallback: probe USB only when we cannot resolve from cache.
-                let registrations = self.scan_registrations();
-                resolve_registration_for_path(path, &registrations)
-            })
-            .ok_or_else(|| Status::not_found("device path could not be resolved"))?;
+        let registration =
+            if let Some(found) = resolve_registration_for_path(path, &cached_registrations) {
+                found
+            } else {
+                // Runtime registry can be empty during startup while async discovery
+                // is still running. Perform a one-shot blocking scan only for this
+                // on-demand open path.
+                let scanned_registrations = self.scan_registrations_async().await;
+                resolve_registration_for_path(path, &scanned_registrations)
+                    .ok_or_else(|| Status::not_found("device path could not be resolved"))?
+            };
         let canonical_path = registration.path.clone();
 
         loop {
@@ -758,7 +899,19 @@ impl DriverGrpc for DriverService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::watchDevListStream>, Status> {
-        let initial_devs = self.scan_devices().await;
+        let mut initial_devs = self.snapshot_known_devices();
+        let mut refreshed_synchronously = false;
+        if initial_devs.is_empty() {
+            tracing::info!(
+                "watch_dev_list: initial snapshot empty; running synchronous discovery refresh"
+            );
+            self.refresh_discovery_snapshot().await;
+            initial_devs = self.snapshot_known_devices();
+            refreshed_synchronously = true;
+        }
+        if !refreshed_synchronously {
+            self.queue_discovery_refresh();
+        }
         let rx = self.device_tx.subscribe();
         let initial_list = DeviceList {
             dev_list: initial_devs,

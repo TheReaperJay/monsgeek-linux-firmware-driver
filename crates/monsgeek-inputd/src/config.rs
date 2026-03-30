@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_DEBOUNCE_MS: u64 = 15;
+const DEFAULT_DEBOUNCE_MS: u64 = 0;
 
 #[derive(Deserialize, Default, Debug, Clone)]
 pub struct Config {
@@ -41,7 +41,7 @@ pub fn load_config() -> Config {
 }
 
 /// Resolve the effective debounce_ms value from CLI flag, config file, and hardcoded default.
-/// Priority: CLI flag > config file > 15ms hardcoded fallback.
+/// Priority: CLI flag > config file > 0ms hardcoded fallback.
 pub fn resolve_debounce_ms(cli_flag: Option<u64>, config: &Config) -> u64 {
     cli_flag
         .or(config.debounce_ms)
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn test_resolve_debounce_hardcoded_fallback() {
         let config = Config::default();
-        assert_eq!(resolve_debounce_ms(None, &config), 15);
+        assert_eq!(resolve_debounce_ms(None, &config), 0);
     }
 
     #[test]

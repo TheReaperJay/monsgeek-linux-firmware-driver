@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use monsgeek_protocol::DeviceRegistry;
+use monsgeek_transport::active_path::{self, ActivePathState};
 use monsgeek_transport::discovery::{self, DeviceInfo};
 use monsgeek_transport::error::TransportError;
 use monsgeek_transport::input::InputProcessor;
@@ -70,6 +71,10 @@ const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
 /// These fall outside the explicit Disconnected mapping in read_report_with_timeout.
 /// Consecutive errors with no successful reads indicate the device is gone.
 const DISCONNECT_ERROR_THRESHOLD: u32 = 10;
+/// Freshness window for preferring previously active path on reconnect.
+const ACTIVE_PATH_SELECTION_TTL: Duration = Duration::from_secs(20);
+/// Minimum interval between active-path marker refresh writes.
+const ACTIVE_PATH_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Path to the device registry JSON files relative to the binary's compile-time
 /// location. At runtime, the daemon resolves this from the cargo workspace root.
@@ -182,6 +187,7 @@ pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>
         }
     }
 
+    clear_active_path_marker();
     log::info!("Daemon shut down cleanly");
     Ok(())
 }
@@ -228,11 +234,29 @@ fn select_target_devices(
 
     // Prefer canonical registry PIDs over runtime alias PIDs for first choice.
     // Fallback candidates remain in the list for automatic recovery.
-    devices.sort_by_key(|d| !registry.find_by_vid_pid(d.vid, d.pid).is_empty());
-    devices.reverse();
+    devices.sort_by_key(|d| registry.find_by_vid_pid(d.vid, d.pid).is_empty());
 
     if let Some((bus, address)) = preferred_location {
         devices.sort_by_key(|d| d.bus != bus || d.address != address);
+    }
+
+    // If we recently emitted real input from a path, prefer reconnecting that
+    // location first over VID/PID heuristics.
+    if let Some(active) = active_path::read_active_path(ACTIVE_PATH_SELECTION_TTL) {
+        let matched = devices
+            .iter()
+            .filter(|d| device_matches_active_path(d, &active))
+            .count();
+        if matched > 0 {
+            log::info!(
+                "Preferring active path {:03}:{:03} (VID 0x{:04X} PID 0x{:04X})",
+                active.bus,
+                active.address,
+                active.vid,
+                active.pid
+            );
+            devices.sort_by_key(|d| !device_matches_active_path(d, &active));
+        }
     }
 
     if devices.len() > 1 {
@@ -280,6 +304,7 @@ fn try_connect_and_run(
 
     let mut report = [0u8; 8];
     let mut last_watchdog = Instant::now();
+    let mut last_active_publish = Instant::now() - ACTIVE_PATH_PUBLISH_INTERVAL;
     let mut consecutive_errors: u32 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -292,6 +317,10 @@ fn try_connect_and_run(
         match session.read_report_with_timeout(&mut report, Duration::from_millis(10)) {
             Ok(n) if n >= 8 => {
                 consecutive_errors = 0;
+                if last_active_publish.elapsed() >= ACTIVE_PATH_PUBLISH_INTERVAL {
+                    publish_active_path_for_device(device);
+                    last_active_publish = Instant::now();
+                }
                 let actions = processor.process_report(&report);
                 if !actions.is_empty() {
                     if let Err(e) = emit_actions(&mut uinput_dev, &actions) {
@@ -311,6 +340,7 @@ fn try_connect_and_run(
                 let _ = emit_actions(&mut uinput_dev, &release_actions);
                 drop(uinput_dev);
                 drop(session);
+                clear_active_path_marker();
                 return Err(DaemonError::Disconnected);
             }
             Err(e) => {
@@ -325,6 +355,7 @@ fn try_connect_and_run(
                     let _ = emit_actions(&mut uinput_dev, &release_actions);
                     drop(uinput_dev);
                     drop(session);
+                    clear_active_path_marker();
                     return Err(DaemonError::Disconnected);
                 }
                 log::warn!("IF0 poll error ({}x): {}", consecutive_errors, e);
@@ -335,8 +366,37 @@ fn try_connect_and_run(
     // Clean shutdown path: release all held keys before tearing down
     let release_actions = processor.release_all_keys();
     let _ = emit_actions(&mut uinput_dev, &release_actions);
+    clear_active_path_marker();
     // uinput_dev and session are dropped here, releasing resources
     Ok(())
+}
+
+fn device_matches_active_path(device: &DeviceInfo, active: &ActivePathState) -> bool {
+    device.bus == active.bus
+        && device.address == active.address
+        && device.vid == active.vid
+        && device.pid == active.pid
+}
+
+fn publish_active_path_for_device(device: &DeviceInfo) {
+    if let Err(err) =
+        active_path::publish_active_path(device.vid, device.pid, device.bus, device.address)
+    {
+        log::warn!(
+            "Failed to publish active path {:03}:{:03} (VID 0x{:04X} PID 0x{:04X}): {}",
+            device.bus,
+            device.address,
+            device.vid,
+            device.pid,
+            err
+        );
+    }
+}
+
+fn clear_active_path_marker() {
+    if let Err(err) = active_path::clear_active_path() {
+        log::warn!("Failed to clear active path marker: {}", err);
+    }
 }
 
 /// Block until a USB device with the given VID appears via udev, or shutdown
@@ -489,8 +549,8 @@ mod tests {
             fake_device(1308, 0x4015, 1, 3), // canonical PID
         ];
 
-        let selected = select_target_devices(&registry, candidates, None, None)
-            .expect("selection failed");
+        let selected =
+            select_target_devices(&registry, candidates, None, None).expect("selection failed");
         assert_eq!(selected[0].pid, 0x4015);
         assert_eq!(selected[0].bus, 1);
         assert_eq!(selected[0].address, 3);

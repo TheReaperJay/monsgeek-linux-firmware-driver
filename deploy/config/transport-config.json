@@ -1,0 +1,10 @@
+{
+  "discovery": {
+    "query_retries": 2,
+    "dongle_forward_send_retries": 12,
+    "dongle_forward_poll_retries_per_send": 2,
+    "dongle_status_poll_retries": 4,
+    "dongle_forward_budget_ms": 1300,
+    "fallback_to_direct_query": true
+  }
+}

@@ -1197,6 +1197,8 @@ dependencies = [
  "log",
  "monsgeek-protocol",
  "rusb",
+ "serde",
+ "serde_json",
  "simple_logger",
  "thiserror 2.0.18",
  "udev",

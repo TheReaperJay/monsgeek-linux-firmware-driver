@@ -25,5 +25,9 @@ rm -rf /usr/share/monsgeek/protocol/devices
 rmdir /usr/share/monsgeek/protocol 2>/dev/null || true
 rmdir /usr/share/monsgeek 2>/dev/null || true
 
+echo "==> Removing transport runtime config"
+rm -f /etc/monsgeek/transport-config.json
+rmdir /etc/monsgeek 2>/dev/null || true
+
 echo "==> Reloading systemd daemon"
 systemctl daemon-reload

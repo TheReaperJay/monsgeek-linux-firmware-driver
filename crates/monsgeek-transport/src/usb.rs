@@ -326,6 +326,8 @@ impl UsbSession {
     /// IF1/IF2 STALL. Our new session detaches usbhid from IF2 before that
     /// blocks us.
     pub fn reset_and_reopen(self) -> Result<Self, TransportError> {
+        let bus = self.handle.device().bus_number();
+        let address = self.handle.device().address();
         let vid = self
             .handle
             .device()
@@ -358,7 +360,7 @@ impl UsbSession {
             }
         }
 
-        Self::open_with_mode(vid, pid, mode)
+        Self::open_impl(vid, pid, mode, Some((bus, address)))
     }
 
     /// Send a 64-byte HID feature report to IF2 via SET_REPORT control transfer.
@@ -404,6 +406,14 @@ impl UsbSession {
     /// The flow_control layer depends on this signature:
     /// `let response = session.vendor_get_report()?;`
     pub(crate) fn vendor_get_report(&self) -> Result<[u8; 64], TransportError> {
+        self.vendor_get_report_with_timeout(USB_TIMEOUT)
+    }
+
+    /// Read a HID feature report from IF2 via GET_REPORT with a caller-provided timeout.
+    pub(crate) fn vendor_get_report_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<[u8; 64], TransportError> {
         // Read one extra byte to handle stacks that prepend report ID 0x00.
         let mut raw = [0u8; 65];
         let read_len = self
@@ -414,7 +424,7 @@ impl UsbSession {
                 FEATURE_REPORT_WVALUE,
                 IF2 as u16,
                 &mut raw,
-                USB_TIMEOUT,
+                timeout,
             )
             .map_err(TransportError::from)?;
 

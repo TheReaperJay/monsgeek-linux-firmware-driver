@@ -5,7 +5,7 @@ Requires=monsgeek-driver.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/monsgeek-inputd --debounce-ms 15
+ExecStart=/usr/bin/monsgeek-inputd
 Restart=on-failure
 RestartSec=2
 Environment=MONSGEEK_DEVICE_REGISTRY_DIR=/usr/share/monsgeek/protocol/devices

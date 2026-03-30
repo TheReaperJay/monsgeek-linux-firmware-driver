@@ -10,12 +10,77 @@
 //! `query_command` still sleeps after SET_REPORT to give firmware time to
 //! prepare the response before GET_REPORT.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monsgeek_protocol::{ChecksumType, build_command, cmd, timing};
 
 use crate::error::TransportError;
+use crate::runtime_config::runtime_config;
 use crate::usb::UsbSession;
+
+#[derive(Debug, Clone, Copy)]
+struct QueryExecutionOptions {
+    retries: usize,
+    allow_dongle_forwarding: bool,
+    allow_placeholder_followups: bool,
+    dongle_forward_send_retries: usize,
+    dongle_forward_poll_retries_per_send: usize,
+    dongle_status_poll_retries: usize,
+    dongle_forward_budget: Option<Duration>,
+    fallback_to_direct_query: bool,
+}
+
+impl QueryExecutionOptions {
+    fn regular() -> Self {
+        Self {
+            retries: timing::QUERY_RETRIES,
+            allow_dongle_forwarding: true,
+            allow_placeholder_followups: true,
+            dongle_forward_send_retries: timing::QUERY_RETRIES,
+            dongle_forward_poll_retries_per_send: 15,
+            dongle_status_poll_retries: 5,
+            dongle_forward_budget: None,
+            fallback_to_direct_query: true,
+        }
+    }
+
+    fn discovery() -> Self {
+        let discovery = &runtime_config().discovery;
+        Self {
+            retries: discovery.query_retries.max(1),
+            allow_dongle_forwarding: false,
+            allow_placeholder_followups: false,
+            dongle_forward_send_retries: 0,
+            dongle_forward_poll_retries_per_send: 0,
+            dongle_status_poll_retries: 0,
+            dongle_forward_budget: None,
+            fallback_to_direct_query: false,
+        }
+    }
+
+    fn discovery_dongle() -> Self {
+        let discovery = &runtime_config().discovery;
+        let budget = if discovery.dongle_forward_budget_ms == 0 {
+            None
+        } else {
+            Some(Duration::from_millis(discovery.dongle_forward_budget_ms))
+        };
+        Self {
+            retries: discovery.query_retries.max(1),
+            allow_dongle_forwarding: true,
+            // Alias/dongle sessions often return an empty placeholder first and
+            // require cached-response/poll follow-up before echo is available.
+            allow_placeholder_followups: true,
+            dongle_forward_send_retries: discovery.dongle_forward_send_retries,
+            dongle_forward_poll_retries_per_send: discovery
+                .dongle_forward_poll_retries_per_send
+                .max(1),
+            dongle_status_poll_retries: discovery.dongle_status_poll_retries.max(1),
+            dongle_forward_budget: budget,
+            fallback_to_direct_query: discovery.fallback_to_direct_query,
+        }
+    }
+}
 
 /// Send a command and read the response, retrying until the echo byte matches.
 ///
@@ -42,6 +107,62 @@ pub(crate) fn query_command(
     data: &[u8],
     checksum: ChecksumType,
 ) -> Result<[u8; 64], TransportError> {
+    query_command_with_options(
+        session,
+        cmd_byte,
+        data,
+        checksum,
+        QueryExecutionOptions::regular(),
+    )
+}
+
+/// Discovery variant of [`query_command`] with bounded retries and no dongle
+/// forwarding side-path.
+///
+/// Discovery should stay fast and non-intrusive:
+/// - fewer retries than runtime command paths
+/// - no cached-response/dongle polling loops
+pub(crate) fn query_command_discovery(
+    session: &UsbSession,
+    cmd_byte: u8,
+    data: &[u8],
+    checksum: ChecksumType,
+) -> Result<[u8; 64], TransportError> {
+    query_command_with_options(
+        session,
+        cmd_byte,
+        data,
+        checksum,
+        QueryExecutionOptions::discovery(),
+    )
+}
+
+/// Discovery variant for dongle/alias runtime paths.
+///
+/// Enables dongle forwarding, but keeps retries bounded so discovery remains
+/// responsive for watch_dev_list bootstrap.
+pub(crate) fn query_command_discovery_dongle(
+    session: &UsbSession,
+    cmd_byte: u8,
+    data: &[u8],
+    checksum: ChecksumType,
+) -> Result<[u8; 64], TransportError> {
+    query_command_with_options(
+        session,
+        cmd_byte,
+        data,
+        checksum,
+        QueryExecutionOptions::discovery_dongle(),
+    )
+}
+
+fn query_command_with_options(
+    session: &UsbSession,
+    cmd_byte: u8,
+    data: &[u8],
+    checksum: ChecksumType,
+    options: QueryExecutionOptions,
+) -> Result<[u8; 64], TransportError> {
     let frame = build_command(cmd_byte, data, checksum);
     log::debug!(
         "query 0x{:02X} ({}) frame[1..10]={:02X?} checksum={:?} data_len={}",
@@ -54,13 +175,37 @@ pub(crate) fn query_command(
     let mut last_actual: u8 = 0;
     let mut last_err: Option<TransportError> = None;
 
-    if is_probable_dongle_session(session) && !is_dongle_local_command(cmd_byte) {
-        if let Some(response) = query_via_dongle_forward_path(session, cmd_byte, &frame[1..])? {
+    let used_dongle_forwarding = options.allow_dongle_forwarding
+        && is_probable_dongle_session(session)
+        && !is_dongle_local_command(cmd_byte);
+    if used_dongle_forwarding {
+        if let Some(response) = query_via_dongle_forward_path(
+            session,
+            cmd_byte,
+            &frame[1..],
+            options.dongle_forward_send_retries,
+            options.dongle_forward_poll_retries_per_send,
+            options.dongle_status_poll_retries,
+            options.dongle_forward_budget,
+        )? {
             return Ok(response);
+        }
+        log::info!(
+            "dongle-forward path exhausted for 0x{:02X} ({}), falling back_to_direct_query={}",
+            cmd_byte,
+            cmd::name(cmd_byte),
+            options.fallback_to_direct_query
+        );
+        if !options.fallback_to_direct_query {
+            return Err(TransportError::EchoMismatch {
+                expected: cmd_byte,
+                actual: 0x00,
+                attempts: options.dongle_forward_send_retries,
+            });
         }
     }
 
-    for attempt in 0..timing::QUERY_RETRIES {
+    for attempt in 0..options.retries {
         if let Err(err) = session.vendor_set_report(&frame[1..]) {
             log::warn!(
                 "Query attempt {} for 0x{:02X} ({}) send failed: {}",
@@ -70,7 +215,7 @@ pub(crate) fn query_command(
                 err
             );
             last_err = Some(err);
-            if attempt + 1 < timing::QUERY_RETRIES {
+            if attempt + 1 < options.retries {
                 std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
                 continue;
             }
@@ -88,7 +233,7 @@ pub(crate) fn query_command(
                     err
                 );
                 last_err = Some(err);
-                if attempt + 1 < timing::QUERY_RETRIES {
+                if attempt + 1 < options.retries {
                     std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
                     continue;
                 }
@@ -100,11 +245,11 @@ pub(crate) fn query_command(
             return Ok(normalized);
         }
 
-        if is_empty_placeholder_response(&response) {
+        if options.allow_placeholder_followups && is_empty_placeholder_response(&response) {
             if let Some(normalized) = try_read_cached_response_after_flush(session, cmd_byte) {
                 return Ok(normalized);
             }
-            if let Some(normalized) = try_read_via_dongle_poll_cycle(session, cmd_byte) {
+            if let Some(normalized) = try_read_via_dongle_poll_cycle(session, cmd_byte, 5) {
                 return Ok(normalized);
             }
 
@@ -152,7 +297,7 @@ pub(crate) fn query_command(
     Err(TransportError::EchoMismatch {
         expected: cmd_byte,
         actual: last_actual,
-        attempts: timing::QUERY_RETRIES,
+        attempts: options.retries,
     })
 }
 
@@ -202,59 +347,133 @@ fn query_via_dongle_forward_path(
     session: &UsbSession,
     cmd_byte: u8,
     cmd_payload: &[u8],
+    send_retries: usize,
+    poll_retries_per_send: usize,
+    status_poll_retries: usize,
+    budget: Option<Duration>,
 ) -> Result<Option<[u8; 64]>, TransportError> {
-    const POLL_RETRIES_PER_SEND: usize = 15;
+    const FORWARD_INITIAL_WAIT_MS: u64 = 30;
     const POLL_DELAY_MS: u64 = 20;
+    if send_retries == 0 && budget.is_none() {
+        return Ok(None);
+    }
 
-    for send_attempt in 0..timing::QUERY_RETRIES {
+    prepare_dongle_forwarding(session);
+
+    let started = Instant::now();
+    let max_send_attempts = send_retries.max(1);
+
+    for send_attempt in 1..=max_send_attempts {
+        if budget.is_some_and(|deadline| started.elapsed() >= deadline) {
+            break;
+        }
         session.vendor_set_report(cmd_payload)?;
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(FORWARD_INITIAL_WAIT_MS));
 
-        for _ in 0..POLL_RETRIES_PER_SEND {
-            if let Some(normalized) = try_read_via_dongle_poll_cycle(session, cmd_byte) {
-                log::debug!(
-                    "dongle-forward query resolved 0x{:02X} ({}) on send attempt {}",
+        for poll_attempt in 1..=poll_retries_per_send.max(1) {
+            if let Some(normalized) =
+                try_read_via_dongle_poll_cycle(session, cmd_byte, status_poll_retries)
+            {
+                log::info!(
+                    "dongle-forward query resolved 0x{:02X} ({}) on send attempt {} poll_attempt {}",
                     cmd_byte,
                     cmd::name(cmd_byte),
-                    send_attempt + 1
+                    send_attempt,
+                    poll_attempt
                 );
                 return Ok(Some(normalized));
             }
             std::thread::sleep(Duration::from_millis(POLL_DELAY_MS));
+            if budget.is_some_and(|deadline| started.elapsed() >= deadline) {
+                break;
+            }
         }
+
+        log::debug!(
+            "dongle-forward send attempt {} exhausted for 0x{:02X} ({})",
+            send_attempt,
+            cmd_byte,
+            cmd::name(cmd_byte)
+        );
     }
 
+    log::info!(
+        "dongle-forward unresolved for 0x{:02X} ({}) after {} send attempt(s) elapsed_ms={}",
+        cmd_byte,
+        cmd::name(cmd_byte),
+        max_send_attempts,
+        started.elapsed().as_millis()
+    );
     Ok(None)
 }
 
+fn prepare_dongle_forwarding(session: &UsbSession) {
+    // Ensure the dongle returns full keyboard responses for cached reads.
+    let set_size = build_command(cmd::SET_RESPONSE_SIZE, &[64], ChecksumType::Bit7);
+    if session.vendor_set_report(&set_size[1..]).is_ok() {
+        std::thread::sleep(Duration::from_millis(2));
+        let _ = session.vendor_get_report_with_timeout(Duration::from_millis(80));
+    } else {
+        log::debug!("dongle-forward prepare: SET_RESPONSE_SIZE write failed");
+    }
+}
+
 fn try_read_cached_response_after_flush(session: &UsbSession, cmd_byte: u8) -> Option<[u8; 64]> {
+    const FLUSH_READ_TIMEOUT_MS: u64 = 120;
     // Dongle path: request cached keyboard response (0xFC), then read it.
     // On direct wired keyboards this may not yield anything useful.
     let flush_frame = build_command(cmd::GET_CACHED_RESPONSE, &[], ChecksumType::Bit7);
-    if session.vendor_set_report(&flush_frame[1..]).is_err() {
+    if let Err(err) = session.vendor_set_report(&flush_frame[1..]) {
+        log::debug!("dongle-forward flush write failed: {}", err);
         return None;
     }
-    std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
-    let flushed = session.vendor_get_report().ok()?;
-    normalize_query_response(cmd_byte, flushed)
+    std::thread::sleep(Duration::from_millis(8));
+    let flushed = match session.vendor_get_report_with_timeout(Duration::from_millis(
+        FLUSH_READ_TIMEOUT_MS,
+    )) {
+        Ok(flushed) => flushed,
+        Err(err) => {
+            log::debug!("dongle-forward flush read failed: {}", err);
+            return None;
+        }
+    };
+    if let Some(normalized) = normalize_query_response(cmd_byte, flushed) {
+        return Some(normalized);
+    }
+    log::debug!(
+        "dongle-forward flush returned non-matching response for 0x{:02X}: prefix={:02X?}",
+        cmd_byte,
+        &flushed[..4]
+    );
+    None
 }
 
-fn try_read_via_dongle_poll_cycle(session: &UsbSession, cmd_byte: u8) -> Option<[u8; 64]> {
+fn try_read_via_dongle_poll_cycle(
+    session: &UsbSession,
+    cmd_byte: u8,
+    status_poll_retries: usize,
+) -> Option<[u8; 64]> {
+    const STATUS_READ_TIMEOUT_MS: u64 = 80;
     // Dongle forwarding path:
     // 1) poll GET_DONGLE_STATUS (0xF7) until has_response=1
     // 2) fetch cached keyboard response via GET_CACHED_RESPONSE (0xFC)
-    const POLL_RETRIES: usize = 5;
     const POLL_DELAY_MS: u64 = 20;
 
-    for _ in 0..POLL_RETRIES {
+    for _ in 0..status_poll_retries {
         let status_frame = build_command(cmd::GET_DONGLE_STATUS, &[], ChecksumType::Bit7);
-        if session.vendor_set_report(&status_frame[1..]).is_err() {
+        if let Err(err) = session.vendor_set_report(&status_frame[1..]) {
+            log::debug!("dongle-forward status write failed: {}", err);
             return None;
         }
         std::thread::sleep(Duration::from_millis(POLL_DELAY_MS));
-        let status = match session.vendor_get_report() {
+        let status = match session
+            .vendor_get_report_with_timeout(Duration::from_millis(STATUS_READ_TIMEOUT_MS))
+        {
             Ok(status) => status,
-            Err(_) => return None,
+            Err(err) => {
+                log::debug!("dongle-forward status read failed: {}", err);
+                return None;
+            }
         };
 
         if !dongle_status_has_response(&status) {
@@ -437,5 +656,16 @@ mod tests {
         assert!(dongle_status_has_response(&status));
         status[1] = 0;
         assert!(!dongle_status_has_response(&status));
+    }
+
+    #[test]
+    fn discovery_dongle_options_have_budget_and_fallback() {
+        let options = QueryExecutionOptions::discovery_dongle();
+        assert!(options.allow_dongle_forwarding);
+        assert!(options.dongle_forward_budget.is_some() || options.dongle_forward_send_retries > 0);
+        assert!(options.dongle_status_poll_retries >= 2);
+        if options.dongle_forward_budget.is_some() {
+            assert!(options.fallback_to_direct_query);
+        }
     }
 }
