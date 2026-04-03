@@ -193,6 +193,9 @@ mod tests {
                 is_online: true,
                 vid: 0x3151,
                 pid: 0x4015,
+                usb_location: path.to_string(),
+                canonical_pid: 0x4015,
+                connection_mode: "usb".to_string(),
             })),
         }
     }

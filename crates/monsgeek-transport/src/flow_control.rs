@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use monsgeek_protocol::{ChecksumType, build_command, cmd, timing};
+use monsgeek_protocol::{ChecksumType, ControlTransport, build_command, cmd, timing};
 
 use crate::error::TransportError;
 use crate::runtime_config::runtime_config;
@@ -57,29 +57,6 @@ impl QueryExecutionOptions {
             fallback_to_direct_query: false,
         }
     }
-
-    fn discovery_dongle() -> Self {
-        let discovery = &runtime_config().discovery;
-        let budget = if discovery.dongle_forward_budget_ms == 0 {
-            None
-        } else {
-            Some(Duration::from_millis(discovery.dongle_forward_budget_ms))
-        };
-        Self {
-            retries: discovery.query_retries.max(1),
-            allow_dongle_forwarding: true,
-            // Alias/dongle sessions often return an empty placeholder first and
-            // require cached-response/poll follow-up before echo is available.
-            allow_placeholder_followups: true,
-            dongle_forward_send_retries: discovery.dongle_forward_send_retries,
-            dongle_forward_poll_retries_per_send: discovery
-                .dongle_forward_poll_retries_per_send
-                .max(1),
-            dongle_status_poll_retries: discovery.dongle_status_poll_retries.max(1),
-            dongle_forward_budget: budget,
-            fallback_to_direct_query: discovery.fallback_to_direct_query,
-        }
-    }
 }
 
 /// Send a command and read the response, retrying until the echo byte matches.
@@ -103,12 +80,14 @@ impl QueryExecutionOptions {
 /// Returns `TransportError::Usb` if any USB transfer fails fatally.
 pub(crate) fn query_command(
     session: &UsbSession,
+    control_transport: ControlTransport,
     cmd_byte: u8,
     data: &[u8],
     checksum: ChecksumType,
 ) -> Result<[u8; 64], TransportError> {
     query_command_with_options(
         session,
+        control_transport,
         cmd_byte,
         data,
         checksum,
@@ -130,6 +109,7 @@ pub(crate) fn query_command_discovery(
 ) -> Result<[u8; 64], TransportError> {
     query_command_with_options(
         session,
+        ControlTransport::Direct,
         cmd_byte,
         data,
         checksum,
@@ -137,27 +117,9 @@ pub(crate) fn query_command_discovery(
     )
 }
 
-/// Discovery variant for dongle/alias runtime paths.
-///
-/// Enables dongle forwarding, but keeps retries bounded so discovery remains
-/// responsive for watch_dev_list bootstrap.
-pub(crate) fn query_command_discovery_dongle(
-    session: &UsbSession,
-    cmd_byte: u8,
-    data: &[u8],
-    checksum: ChecksumType,
-) -> Result<[u8; 64], TransportError> {
-    query_command_with_options(
-        session,
-        cmd_byte,
-        data,
-        checksum,
-        QueryExecutionOptions::discovery_dongle(),
-    )
-}
-
 fn query_command_with_options(
     session: &UsbSession,
+    control_transport: ControlTransport,
     cmd_byte: u8,
     data: &[u8],
     checksum: ChecksumType,
@@ -176,7 +138,7 @@ fn query_command_with_options(
     let mut last_err: Option<TransportError> = None;
 
     let used_dongle_forwarding = options.allow_dongle_forwarding
-        && is_probable_dongle_session(session)
+        && control_transport == ControlTransport::DongleForward
         && !is_dongle_local_command(cmd_byte);
     if used_dongle_forwarding {
         if let Some(response) = query_via_dongle_forward_path(
@@ -321,11 +283,6 @@ fn normalize_query_response(cmd_byte: u8, response: [u8; 64]) -> Option<[u8; 64]
 
 fn is_empty_placeholder_response(response: &[u8; 64]) -> bool {
     response[..8].iter().all(|b| *b == 0)
-}
-
-fn is_probable_dongle_session(session: &UsbSession) -> bool {
-    // M5W runtime dongle PID from registry/runtime paths.
-    matches!(session.product_id(), Some(0x4011))
 }
 
 fn is_dongle_local_command(cmd_byte: u8) -> bool {
@@ -561,6 +518,7 @@ mod tests {
         // Verify the function signature compiles.
         let _fn_ptr: fn(
             &crate::usb::UsbSession,
+            monsgeek_protocol::ControlTransport,
             u8,
             &[u8],
             monsgeek_protocol::ChecksumType,
@@ -656,16 +614,5 @@ mod tests {
         assert!(dongle_status_has_response(&status));
         status[1] = 0;
         assert!(!dongle_status_has_response(&status));
-    }
-
-    #[test]
-    fn discovery_dongle_options_have_budget_and_fallback() {
-        let options = QueryExecutionOptions::discovery_dongle();
-        assert!(options.allow_dongle_forwarding);
-        assert!(options.dongle_forward_budget.is_some() || options.dongle_forward_send_retries > 0);
-        assert!(options.dongle_status_poll_retries >= 2);
-        if options.dongle_forward_budget.is_some() {
-            assert!(options.fallback_to_direct_query);
-        }
     }
 }

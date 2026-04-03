@@ -137,6 +137,7 @@ mod tests {
             display_name: "Test".to_string(),
             company: None,
             device_type: "keyboard".to_string(),
+            control_transport: monsgeek_protocol::ControlTransport::Direct,
             sources: vec![],
             key_count,
             key_layout_name: None,

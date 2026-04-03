@@ -26,12 +26,15 @@ async fn grpc_watch_dev_list_init_add_remove() {
         oneof_dev: Some(dj_dev::OneofDev::Dev(Device {
             dev_type: DeviceType::YzwKeyboard as i32,
             is24: false,
-            path: "3151-4015-ffff-0002-2@id1308-b003-a015-n1".to_string(),
+            path: "usb-b003-p1.2".to_string(),
             id: 1308,
             battery: 100,
             is_online: true,
             vid: 0x3151,
             pid: 0x4015,
+            usb_location: "usb-b003-p1.2".to_string(),
+            canonical_pid: 0x4015,
+            connection_mode: "usb".to_string(),
         })),
     };
 

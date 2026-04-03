@@ -131,7 +131,7 @@ impl UsbSession {
     /// Returns `TransportError::DeviceNotFound` if no matching device is found.
     /// Returns `TransportError::Usb` for any rusb failure during open/claim.
     pub fn open_with_mode(vid: u16, pid: u16, mode: SessionMode) -> Result<Self, TransportError> {
-        Self::open_impl(vid, pid, mode, None)
+        Self::open_impl(vid, pid, mode, None, false)
     }
 
     fn open_impl(
@@ -139,6 +139,7 @@ impl UsbSession {
         pid: u16,
         mode: SessionMode,
         preferred_location: Option<(u8, u8)>,
+        boot_protocol_recovered: bool,
     ) -> Result<Self, TransportError> {
         let context = rusb::Context::new()?;
         let devices = context.devices()?;
@@ -248,7 +249,9 @@ impl UsbSession {
             // When hid-generic probes first, it sends SET_PROTOCOL for us, but
             // with HID_QUIRK_IGNORE (or fast reconnect) no kernel driver probes,
             // so the keyboard never switches to boot protocol without this.
-            handle
+            let bus = device.bus_number();
+            let address = device.address();
+            match handle
                 .write_control(
                     REQUEST_TYPE_OUT,
                     HID_SET_PROTOCOL,
@@ -257,10 +260,60 @@ impl UsbSession {
                     &[],
                     USB_TIMEOUT,
                 )
-                .map_err(|e| {
-                    TransportError::Usb(format!("SET_PROTOCOL(Boot) failed on IF0: {}", e))
-                })?;
-            log::info!("USB: SET_PROTOCOL(Boot) sent to IF0");
+            {
+                Ok(_) => {
+                    log::info!("USB: SET_PROTOCOL(Boot) sent to IF0");
+                }
+                Err(rusb::Error::Pipe) if !boot_protocol_recovered => {
+                    log::warn!(
+                        "USB: SET_PROTOCOL(Boot) stalled on IF0 at bus {:03} addr {:03}; performing one-time input recovery reset",
+                        bus,
+                        address
+                    );
+
+                    for &iface in interfaces.iter().rev() {
+                        handle.release_interface(iface).ok();
+                    }
+                    if detached_if0 {
+                        handle.attach_kernel_driver(IF0).ok();
+                    }
+                    if detached_if2 {
+                        handle.attach_kernel_driver(IF2).ok();
+                    }
+
+                    match handle.reset() {
+                        Ok(()) => {
+                            log::info!(
+                                "USB: input recovery reset OK, waiting {}ms for re-enumeration",
+                                RESET_SETTLE_MS
+                            );
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "USB: input recovery reset failed on bus {:03} addr {:03}: {}",
+                                bus,
+                                address,
+                                err
+                            );
+                        }
+                    }
+                    drop(handle);
+                    std::thread::sleep(Duration::from_millis(RESET_SETTLE_MS));
+                    return Self::open_impl(
+                        vid,
+                        pid,
+                        mode,
+                        preferred_location.or(Some((bus, address))),
+                        true,
+                    );
+                }
+                Err(e) => {
+                    return Err(TransportError::Usb(format!(
+                        "SET_PROTOCOL(Boot) failed on IF0: {}",
+                        e
+                    )));
+                }
+            }
         }
 
         Ok(Self {
@@ -312,6 +365,7 @@ impl UsbSession {
             desc.product_id(),
             mode,
             Some((bus, address)),
+            false,
         )
     }
 
@@ -360,7 +414,7 @@ impl UsbSession {
             }
         }
 
-        Self::open_impl(vid, pid, mode, Some((bus, address)))
+        Self::open_impl(vid, pid, mode, Some((bus, address)), false)
     }
 
     /// Send a 64-byte HID feature report to IF2 via SET_REPORT control transfer.
@@ -488,15 +542,6 @@ impl UsbSession {
     /// USB device address of the opened device.
     pub fn address(&self) -> u8 {
         self.handle.device().address()
-    }
-
-    /// USB product ID of the opened device.
-    pub(crate) fn product_id(&self) -> Option<u16> {
-        self.handle
-            .device()
-            .device_descriptor()
-            .ok()
-            .map(|d| d.product_id())
     }
 }
 

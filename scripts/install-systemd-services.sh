@@ -8,16 +8,31 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
+BINARY_INSTALL_DIR="/usr/bin"
 REGISTRY_INSTALL_DIR="/usr/share/monsgeek/protocol/devices"
 CONFIG_INSTALL_DIR="/etc/monsgeek"
 MODPROBE_DIR="/etc/modprobe.d"
 
-for cmd in cp systemctl; do
+for cmd in cargo cp install systemctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "Missing required command: $cmd"
         exit 1
     fi
 done
+
+echo "==> Building release binaries"
+(
+    cd "$ROOT_DIR"
+    cargo build --release -p monsgeek-driver -p monsgeek-inputd -p monsgeek-cli
+)
+
+echo "==> Installing binaries to $BINARY_INSTALL_DIR"
+install -Dm755 "$ROOT_DIR/target/release/monsgeek-driver" \
+    "$BINARY_INSTALL_DIR/monsgeek-driver"
+install -Dm755 "$ROOT_DIR/target/release/monsgeek-inputd" \
+    "$BINARY_INSTALL_DIR/monsgeek-inputd"
+install -Dm755 "$ROOT_DIR/target/release/monsgeek-cli" \
+    "$BINARY_INSTALL_DIR/monsgeek-cli"
 
 echo "==> Installing monsgeek systemd unit files"
 cp "$ROOT_DIR/deploy/systemd/monsgeek-driver.service" "$SYSTEMD_DIR/monsgeek-driver.service"
@@ -39,7 +54,7 @@ cp "$ROOT_DIR/crates/monsgeek-transport/deploy/monsgeek-hid-usbhid.conf" \
 echo "==> Reloading systemd daemon"
 systemctl daemon-reload
 
-echo "==> Enabling and starting monsgeek services"
+echo "==> Enabling and restarting monsgeek services"
 systemctl enable --now monsgeek-driver.service monsgeek-inputd.service
 
 if systemctl list-unit-files | awk '{print $1}' | grep -Fxq "monsgeek-hid.service"; then

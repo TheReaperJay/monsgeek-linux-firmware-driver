@@ -12,10 +12,13 @@ fn load_registry() -> DeviceRegistry {
 
 fn resolved_target(definition: &DeviceDefinition) -> ResolvedTargetDevice {
     ResolvedTargetDevice {
-        path: "3151-4015-ffff-0002-1".to_string(),
+        path: "usb-b003-p1.2".to_string(),
+        usb_location: "usb-b003-p1.2".to_string(),
         device_id: definition.id,
         vid: definition.vid,
         pid: definition.pid,
+        canonical_pid: definition.pid,
+        connection_mode: "usb".to_string(),
         definition: definition.clone(),
     }
 }

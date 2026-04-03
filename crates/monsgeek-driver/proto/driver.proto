@@ -96,7 +96,7 @@ enum LightTypeEnum {
 
 // Send a HID message
 message SendMsg {
-    string devicePath = 1;          // HID device path (e.g., "3151-5030-65282-2")
+    string devicePath = 1;          // Exact opaque instance path from watchDevList
     bytes msg = 2;                  // Message data (64 bytes for feature reports)
     CheckSumType checkSumType = 3;  // Checksum type
     DangleDevType dangleDevType = 4; // Device type (for wireless dongles)
@@ -104,7 +104,7 @@ message SendMsg {
 
 // Read HID message request
 message ReadMsg {
-    string devicePath = 1;          // HID device path
+    string devicePath = 1;          // Exact opaque instance path from watchDevList
 }
 
 // Response for send operations
@@ -122,12 +122,15 @@ message ResRead {
 message Device {
     DeviceType devType = 1;         // Device type enum
     bool is24 = 2;                  // Is 2.4GHz wireless
-    string path = 3;                // Device path (e.g., "12625-20528-65535-2")
+    string path = 3;                // Opaque device instance path
     int32 id = 4;                   // Device ID (from GET_DEVICE_ID 0x8F query)
     uint32 battery = 5;             // Battery level (0-100)
     bool isOnline = 6;              // Is device online
     uint32 vid = 7;                 // Vendor ID
     uint32 pid = 8;                 // Product ID
+    string usbLocation = 9;         // Human-readable USB topology location
+    uint32 canonicalPid = 10;       // Canonical PID from the registry definition
+    string connectionMode = 11;     // usb | 24g | bluetooth | unknown
 }
 
 // Status for 2.4GHz wireless device

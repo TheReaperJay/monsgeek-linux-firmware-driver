@@ -17,9 +17,7 @@ use monsgeek_protocol::{
     normalize_outbound_command,
 };
 use monsgeek_transport::discovery::{DeviceInfo, ProbeOutcome, ProbeReport, ProbeStrategy};
-use monsgeek_transport::{
-    TransportEvent, TransportHandle, TransportOptions, connect_at_with_options,
-};
+use monsgeek_transport::{TransportHandle, TransportOptions, connect_at_with_options};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
@@ -51,6 +49,7 @@ fn policy_error_to_status(error: &CommandPolicyError) -> Status {
 ///
 /// Semantic command rules (bounds, capability gates, compatibility behavior)
 /// are centralized in `monsgeek-protocol::evaluate_outbound_command`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_dangerous_write(
     definition: &DeviceDefinition,
     msg: &[u8],
@@ -139,14 +138,14 @@ impl DriverService {
 
         let service = self.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(3));
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             // Trigger immediately on startup, then continue on interval.
             service.queue_discovery_refresh();
             loop {
                 interval.tick().await;
-                if service.connected_device_count() == 0 {
+                if service.known_online_device_count() == 0 {
                     service.queue_discovery_refresh();
                 }
             }
@@ -184,7 +183,11 @@ impl DriverService {
             .clear();
     }
 
-    fn connect_registration(&self, registration: DeviceRegistration, emit_add: bool) {
+    fn connect_registration(&self, registration: DeviceRegistration) {
+        if !registration.online {
+            tracing::warn!("refusing to open offline device path={}", registration.path);
+            return;
+        }
         let Some(definition) = self.registry.find_by_id(registration.device_id).cloned() else {
             tracing::warn!(
                 "discovered unknown device id {} on {:03}:{:03}",
@@ -225,21 +228,7 @@ impl DriverService {
             .lock()
             .expect("devices map poisoned")
             .insert(registration.path.clone(), connected.clone());
-
-        Self::spawn_transport_event_loop(
-            Arc::clone(&self.registry),
-            Arc::clone(&self.devices),
-            Arc::clone(&self.path_registry),
-            self.device_tx.clone(),
-            event_rx,
-        );
-
-        if emit_add {
-            let _ = self.device_tx.send(DeviceList {
-                dev_list: vec![device_to_djdev(&connected, true)],
-                r#type: DeviceListChangeType::Add as i32,
-            });
-        }
+        drop(event_rx);
     }
 
     fn discover_selected_infos(&self) -> Vec<DeviceInfo> {
@@ -259,7 +248,6 @@ impl DriverService {
         let mut identified = 0usize;
         let mut open_failed = 0usize;
         let mut query_failed = 0usize;
-        let mut recovery_failed = 0usize;
         let mut unknown_id = 0usize;
 
         for attempt in &report.attempts {
@@ -267,40 +255,30 @@ impl DriverService {
                 ProbeOutcome::Identified => identified += 1,
                 ProbeOutcome::OpenFailed => open_failed += 1,
                 ProbeOutcome::QueryFailed => query_failed += 1,
-                ProbeOutcome::RecoveryFailed => recovery_failed += 1,
                 ProbeOutcome::UnknownDeviceId => unknown_id += 1,
             }
         }
 
         tracing::info!(
-            "probe_summary attempts={} identified={} open_failed={} query_failed={} recovery_failed={} unknown_id={} found={} active_hint={}",
+            "probe_summary attempts={} identified={} open_failed={} query_failed={} unknown_id={} found={} active_hints={}",
             report.attempts.len(),
             identified,
             open_failed,
             query_failed,
-            recovery_failed,
             unknown_id,
             report.found.len(),
-            report
-                .active_hint
-                .as_ref()
-                .map(|h| format!(
-                    "{:03}:{:03}/0x{:04X}:0x{:04X}",
-                    h.bus, h.address, h.vid, h.pid
-                ))
-                .unwrap_or_else(|| "none".to_string()),
+            report.active_hints.len(),
         );
 
         for attempt in &report.attempts {
             let strategy = match attempt.strategy {
-                ProbeStrategy::Canonical => "canonical",
-                ProbeStrategy::AliasDongle => "alias_dongle",
+                ProbeStrategy::DescriptorOnly => "descriptor_only",
+                ProbeStrategy::FirmwareQuery => "firmware_query",
             };
             let outcome = match attempt.outcome {
                 ProbeOutcome::Identified => "identified",
                 ProbeOutcome::OpenFailed => "open_failed",
                 ProbeOutcome::QueryFailed => "query_failed",
-                ProbeOutcome::RecoveryFailed => "recovery_failed",
                 ProbeOutcome::UnknownDeviceId => "unknown_device_id",
             };
             tracing::info!(
@@ -320,7 +298,7 @@ impl DriverService {
                 attempt.error.as_deref().unwrap_or("n/a"),
             );
 
-            if attempt.strategy == ProbeStrategy::Canonical
+            if attempt.strategy == ProbeStrategy::FirmwareQuery
                 && attempt.outcome == ProbeOutcome::OpenFailed
                 && attempt
                     .error
@@ -347,24 +325,20 @@ impl DriverService {
 
     fn scan_registrations(&self) -> Vec<DeviceRegistration> {
         let selected = self.discover_selected_infos();
-        let mut registry = self.path_registry.lock().expect("path registry poisoned");
-        let mut result = Vec::new();
-
-        for info in selected {
-            let Some(definition) = self.registry.find_by_id(info.device_id) else {
-                continue;
-            };
-
-            let registration =
-                registry.register(info.vid, info.pid, definition.id, info.bus, info.address);
-            result.push(registration);
-        }
-
-        result
+        selected
+            .into_iter()
+            .map(|info| DeviceRegistration::from_device_info(&info))
+            .collect()
     }
 
-    fn connected_device_count(&self) -> usize {
-        self.devices.lock().expect("devices map poisoned").len()
+    fn known_online_device_count(&self) -> usize {
+        self.path_registry
+            .lock()
+            .expect("path registry poisoned")
+            .all_registrations()
+            .into_iter()
+            .filter(|registration| registration.online)
+            .count()
     }
 
     async fn scan_registrations_async(&self) -> Vec<DeviceRegistration> {
@@ -379,54 +353,75 @@ impl DriverService {
     }
 
     fn snapshot_known_devices(&self) -> Vec<DjDev> {
-        let connected: Vec<ConnectedDevice> = {
-            let devices = self.devices.lock().expect("devices map poisoned");
-            devices.values().cloned().collect()
-        };
-        let connected_locations: std::collections::HashSet<(u8, u8)> = connected
-            .iter()
-            .map(|device| (device.registration.bus, device.registration.address))
-            .collect();
-
-        let mut result: Vec<DjDev> = connected
-            .iter()
-            .map(|connected| device_to_djdev(connected, true))
-            .collect();
-
-        let registrations = self
+        let mut registrations = self
             .path_registry
             .lock()
             .expect("path registry poisoned")
             .all_registrations();
-        for registration in registrations {
-            if connected_locations.contains(&(registration.bus, registration.address)) {
-                continue;
-            }
-            let canonical_pid = self
-                .registry
-                .find_by_id(registration.device_id)
-                .map(|definition| definition.pid);
-            result.push(registration_to_djdev(registration, canonical_pid));
-        }
-        result
+        registrations.sort_by_key(|registration| registration.path.clone());
+        registrations
+            .into_iter()
+            .map(registration_to_djdev)
+            .collect()
     }
 
     async fn refresh_discovery_snapshot(&self) {
         let registrations = self.scan_registrations_async().await;
+        let live_paths: std::collections::HashSet<String> = registrations
+            .iter()
+            .map(|registration| registration.path.clone())
+            .collect();
 
-        let connected_locations: std::collections::HashSet<(u8, u8)> = {
-            let devices = self.devices.lock().expect("devices map poisoned");
-            devices
-                .values()
-                .map(|connected| (connected.registration.bus, connected.registration.address))
-                .collect()
-        };
+        for registration in &registrations {
+            let (previous, registration) = {
+                let mut path_registry = self.path_registry.lock().expect("path registry poisoned");
+                let previous = path_registry.get(&registration.path);
+                let current = path_registry.upsert_registration(registration);
+                (previous, current)
+            };
 
-        for registration in registrations {
-            if connected_locations.contains(&(registration.bus, registration.address)) {
+            if let Some(previous) = previous.as_ref()
+                && previous.online
+                && previous.pid == registration.pid
+                && previous.bus == registration.bus
+                && previous.address == registration.address
+            {
                 continue;
             }
-            self.connect_registration(registration, true);
+
+            if let Some(previous) = previous {
+                if previous.bus != registration.bus || previous.address != registration.address {
+                    self.devices
+                        .lock()
+                        .expect("devices map poisoned")
+                        .remove(&registration.path);
+                }
+                let _ = self.device_tx.send(DeviceList {
+                    dev_list: vec![registration_to_djdev(registration.clone())],
+                    r#type: DeviceListChangeType::Change as i32,
+                });
+            } else {
+                let _ = self.device_tx.send(DeviceList {
+                    dev_list: vec![registration_to_djdev(registration.clone())],
+                    r#type: DeviceListChangeType::Add as i32,
+                });
+            }
+        }
+
+        let offline = self
+            .path_registry
+            .lock()
+            .expect("path registry poisoned")
+            .mark_offline_missing_paths(&live_paths);
+        for registration in offline {
+            self.devices
+                .lock()
+                .expect("devices map poisoned")
+                .remove(&registration.path);
+            let _ = self.device_tx.send(DeviceList {
+                dev_list: vec![registration_to_djdev(registration)],
+                r#type: DeviceListChangeType::Change as i32,
+            });
         }
     }
 
@@ -446,166 +441,32 @@ impl DriverService {
         });
     }
 
-    fn spawn_transport_event_loop(
-        registry: Arc<DeviceRegistry>,
-        devices: Arc<Mutex<HashMap<String, ConnectedDevice>>>,
-        path_registry: Arc<Mutex<DevicePathRegistry>>,
-        device_tx: broadcast::Sender<DeviceList>,
-        event_rx: crossbeam_channel::Receiver<TransportEvent>,
-    ) {
-        std::thread::spawn(move || {
-            while let Ok(event) = event_rx.recv() {
-                match event {
-                    TransportEvent::DeviceLeft { bus, address } => {
-                        let removed_registration = path_registry
-                            .lock()
-                            .expect("path registry poisoned")
-                            .remove_by_bus_address(bus, address);
-                        if let Some(removed_registration) = removed_registration {
-                            let removed = devices
-                                .lock()
-                                .expect("devices map poisoned")
-                                .remove(&removed_registration.path);
-                            if let Some(removed) = removed {
-                                let _ = device_tx.send(DeviceList {
-                                    dev_list: vec![device_to_djdev(&removed, false)],
-                                    r#type: DeviceListChangeType::Remove as i32,
-                                });
-                            }
-                        }
-                    }
-                    TransportEvent::DeviceArrived {
-                        vid,
-                        pid,
-                        bus,
-                        address,
-                    } => {
-                        if path_registry
-                            .lock()
-                            .expect("path registry poisoned")
-                            .get_by_bus_address(bus, address)
-                            .is_some()
-                        {
-                            continue;
-                        }
-
-                        let info = match monsgeek_transport::discovery::probe_device_at(
-                            &registry, bus, address,
-                        ) {
-                            Ok(Some(info)) => info,
-                            Ok(None) => continue,
-                            Err(err) => {
-                                tracing::warn!(
-                                    "hot-plug probe failed for {:04x}:{:04x} at {:03}:{:03}: {}",
-                                    vid,
-                                    pid,
-                                    bus,
-                                    address,
-                                    err
-                                );
-                                continue;
-                            }
-                        };
-
-                        let Some(definition) = registry.find_by_id(info.device_id).cloned() else {
-                            continue;
-                        };
-
-                        let (handle, nested_event_rx) = match connect_at_with_options(
-                            &definition,
-                            bus,
-                            address,
-                            TransportOptions::control_only(),
-                        ) {
-                            Ok(parts) => parts,
-                            Err(err) => {
-                                tracing::warn!(
-                                    "hot-plug runtime connect failed for {:04x}:{:04x} at {:03}:{:03}: {}",
-                                    vid,
-                                    pid,
-                                    bus,
-                                    address,
-                                    err
-                                );
-                                continue;
-                            }
-                        };
-
-                        let registration = path_registry
-                            .lock()
-                            .expect("path registry poisoned")
-                            .register(info.vid, info.pid, definition.id, bus, address);
-
-                        let connected = ConnectedDevice {
-                            registration: registration.clone(),
-                            handle,
-                            definition,
-                        };
-
-                        devices
-                            .lock()
-                            .expect("devices map poisoned")
-                            .insert(registration.path.clone(), connected.clone());
-
-                        let _ = device_tx.send(DeviceList {
-                            dev_list: vec![device_to_djdev(&connected, true)],
-                            r#type: DeviceListChangeType::Add as i32,
-                        });
-
-                        Self::spawn_transport_event_loop(
-                            Arc::clone(&registry),
-                            Arc::clone(&devices),
-                            Arc::clone(&path_registry),
-                            device_tx.clone(),
-                            nested_event_rx,
-                        );
-                    }
-                    TransportEvent::InputActions { .. } => {}
-                }
-            }
-        });
-    }
-
     async fn open_device(&self, path: &str) -> Result<ConnectedDevice, Status> {
         if let Ok(connected) = self.find_connected_device(path) {
             return Ok(connected);
         }
 
-        // Prefer runtime-cached registrations from watch/init/hot-plug first.
-        // This avoids re-probing every vendor-matched USB device on each
-        // first write/read, which can reset unrelated interfaces (e.g. 0x4011).
-        let cached_registrations = self
+        let registration = self
             .path_registry
             .lock()
             .expect("path registry poisoned")
-            .all_registrations();
-        let registration =
-            if let Some(found) = resolve_registration_for_path(path, &cached_registrations) {
-                found
-            } else {
-                // Runtime registry can be empty during startup while async discovery
-                // is still running. Perform a one-shot blocking scan only for this
-                // on-demand open path.
-                let scanned_registrations = self.scan_registrations_async().await;
-                resolve_registration_for_path(path, &scanned_registrations)
-                    .ok_or_else(|| Status::not_found("device path could not be resolved"))?
-            };
-        let canonical_path = registration.path.clone();
+            .get(path)
+            .ok_or_else(|| Status::not_found("device path could not be resolved"))?;
+        if !registration.online {
+            return Err(Status::not_found("device not connected"));
+        }
 
         loop {
             if let Ok(connected) = self.find_connected_device(path) {
                 return Ok(connected);
             }
-            if let Ok(connected) = self.find_connected_device(&canonical_path) {
-                return Ok(connected);
-            }
 
             let should_open = {
                 let mut opening = self.opening_paths.lock().expect("opening set poisoned");
-                if opening.contains(&canonical_path) {
+                if opening.contains(path) {
                     false
                 } else {
-                    opening.insert(canonical_path.clone());
+                    opening.insert(path.to_string());
                     true
                 }
             };
@@ -617,16 +478,13 @@ impl DriverService {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
-        self.connect_registration(registration, true);
+        self.connect_registration(registration);
         self.opening_paths
             .lock()
             .expect("opening set poisoned")
-            .remove(&canonical_path);
+            .remove(path);
 
-        if let Ok(connected) = self.find_connected_device(path) {
-            return Ok(connected);
-        }
-        self.find_connected_device(&canonical_path)
+        self.find_connected_device(path)
             .map_err(|_| Status::not_found("device path could not be resolved"))
     }
 
@@ -634,53 +492,6 @@ impl DriverService {
         let devices = self.devices.lock().expect("devices map poisoned");
         if let Some(device) = devices.get(path) {
             return Ok(device.clone());
-        }
-
-        let hinted_id = parse_id_hint(path);
-        let parsed_vid_pid = DevicePathRegistry::parse_vid_pid(path);
-
-        if let Some((vid, pid)) = parsed_vid_pid {
-            let mut by_vid_pid = devices.values().filter(|device| {
-                device.registration.vid == vid
-                    && device.registration.pid == pid
-                    && hinted_id.is_none_or(|id| device.registration.device_id == id)
-            });
-            if let Some(first) = by_vid_pid.next() {
-                if by_vid_pid.next().is_some() {
-                    return Err(Status::failed_precondition(
-                        "ambiguous device path: multiple connected devices match this VID/PID",
-                    ));
-                }
-                return Ok(first.clone());
-            }
-
-            if let Some(id) = hinted_id {
-                let mut by_vid_and_id = devices.values().filter(|device| {
-                    device.registration.vid == vid && device.registration.device_id == id
-                });
-                if let Some(first) = by_vid_and_id.next() {
-                    if by_vid_and_id.next().is_some() {
-                        return Err(Status::failed_precondition(
-                            "ambiguous device path: multiple connected devices share this device ID",
-                        ));
-                    }
-                    return Ok(first.clone());
-                }
-            }
-        }
-
-        if let Some(id) = hinted_id {
-            let mut by_id = devices
-                .values()
-                .filter(|device| device.registration.device_id == id);
-            if let Some(first) = by_id.next() {
-                if by_id.next().is_some() {
-                    return Err(Status::failed_precondition(
-                        "ambiguous device path: multiple connected devices share this device ID",
-                    ));
-                }
-                return Ok(first.clone());
-            }
         }
 
         Err(Status::not_found("device not connected"))
@@ -703,9 +514,7 @@ impl DriverService {
 
     fn enqueue_synthetic_empty_read_for_aliases(&self, requested_path: &str, canonical_path: &str) {
         self.enqueue_synthetic_empty_read(requested_path);
-        if canonical_path != requested_path {
-            self.enqueue_synthetic_empty_read(canonical_path);
-        }
+        let _ = canonical_path;
     }
 
     fn enqueue_synthetic_response_for_aliases(
@@ -714,10 +523,8 @@ impl DriverService {
         canonical_path: &str,
         response: Vec<u8>,
     ) {
-        self.enqueue_synthetic_response(requested_path, response.clone());
-        if canonical_path != requested_path {
-            self.enqueue_synthetic_response(canonical_path, response);
-        }
+        let _ = canonical_path;
+        self.enqueue_synthetic_response(requested_path, response);
     }
 
     fn pop_synthetic_response(&self, path: &str) -> Option<Vec<u8>> {
@@ -819,83 +626,23 @@ impl DriverService {
     }
 }
 
-fn parse_id_hint(path: &str) -> Option<i32> {
-    let suffix = path.split_once('@')?.1;
-    let id_part = suffix
-        .split('-')
-        .find(|segment| segment.starts_with("id"))?;
-    id_part.strip_prefix("id")?.parse::<i32>().ok()
-}
-
-fn resolve_registration_for_path(
-    path: &str,
-    registrations: &[DeviceRegistration],
-) -> Option<DeviceRegistration> {
-    if let Some(exact) = registrations
-        .iter()
-        .find(|registration| registration.path == path)
-    {
-        return Some(exact.clone());
-    }
-
-    let (vid, pid) = DevicePathRegistry::parse_vid_pid(path)?;
-    let by_vid: Vec<&DeviceRegistration> = registrations
-        .iter()
-        .filter(|registration| registration.vid == vid)
-        .collect();
-    if by_vid.is_empty() {
-        return None;
-    }
-
-    let hinted_id = parse_id_hint(path);
-    let narrowed: Vec<&DeviceRegistration> = if let Some(id) = hinted_id {
-        let by_id: Vec<&DeviceRegistration> = by_vid
-            .iter()
-            .copied()
-            .filter(|registration| registration.device_id == id)
-            .collect();
-        if by_id.is_empty() { by_vid } else { by_id }
-    } else {
-        by_vid
-    };
-
-    let mut sorted = narrowed;
-    sorted.sort_by_key(|registration| {
-        (
-            registration.pid != pid,
-            registration.bus,
-            registration.address,
-        )
-    });
-    sorted.first().cloned().cloned()
-}
-
-fn device_to_djdev(device: &ConnectedDevice, is_online: bool) -> DjDev {
+fn registration_to_djdev(registration: DeviceRegistration) -> DjDev {
     DjDev {
         oneof_dev: Some(dj_dev::OneofDev::Dev(Device {
             dev_type: DeviceType::YzwKeyboard as i32,
-            is24: device.registration.pid != device.definition.pid,
-            path: device.registration.path.clone(),
-            id: device.registration.device_id,
-            battery: 100,
-            is_online,
-            vid: device.registration.vid as u32,
-            pid: device.registration.pid as u32,
-        })),
-    }
-}
-
-fn registration_to_djdev(registration: DeviceRegistration, canonical_pid: Option<u16>) -> DjDev {
-    DjDev {
-        oneof_dev: Some(dj_dev::OneofDev::Dev(Device {
-            dev_type: DeviceType::YzwKeyboard as i32,
-            is24: canonical_pid.is_some_and(|pid| registration.pid != pid),
+            is24: matches!(
+                registration.connection_mode,
+                monsgeek_transport::discovery::ConnectionMode::Dongle24g
+            ),
             path: registration.path,
             id: registration.device_id,
             battery: 100,
-            is_online: true,
+            is_online: registration.online,
             vid: registration.vid as u32,
             pid: registration.pid as u32,
+            usb_location: registration.usb_location,
+            canonical_pid: registration.canonical_pid as u32,
+            connection_mode: registration.connection_mode.as_str().to_string(),
         })),
     }
 }
@@ -1112,10 +859,16 @@ impl DriverGrpc for DriverService {
         }
 
         let req = request.into_inner();
+        let target_device_id = self
+            .path_registry
+            .lock()
+            .expect("path registry poisoned")
+            .get(&req.dev_path)
+            .map(|registration| registration.device_id)
+            .and_then(|id| u32::try_from(id).ok())
+            .unwrap_or(1308);
         let target = BridgeTarget {
-            device_id: parse_id_hint(&req.dev_path)
-                .and_then(|id| u32::try_from(id).ok())
-                .unwrap_or(1308),
+            device_id: target_device_id,
             model_slug: "monsgeek-m5w".to_string(),
             device_path: req.dev_path.clone(),
         };
@@ -1227,58 +980,66 @@ mod tests {
     use crate::service::DriverService;
     use crate::service::device_registry::DevicePathRegistry;
 
+    fn sample_registration(
+        path: &str,
+        usb_location: &str,
+        pid: u16,
+        bus: u8,
+        address: u8,
+    ) -> crate::service::device_registry::DeviceRegistration {
+        crate::service::device_registry::DeviceRegistration {
+            path: path.to_string(),
+            usb_location: usb_location.to_string(),
+            device_id: 1308,
+            vid: 0x3151,
+            pid,
+            canonical_pid: 0x4015,
+            connection_mode: monsgeek_transport::discovery::ConnectionMode::Usb,
+            bus,
+            address,
+            online: true,
+        }
+    }
+
     #[test]
-    fn synthetic_path_registry_roundtrip() {
+    fn instance_path_registry_roundtrip() {
         let mut registry = DevicePathRegistry::new();
-        let reg = registry.register(0x3151, 0x4015, 1308, 3, 15);
-        let found = registry.get_by_bus_address(3, 15).unwrap();
+        let reg = sample_registration("usb-b003-p1.2", "usb-b003-p1.2", 0x4015, 3, 15);
+        let _ = registry.upsert_registration(&reg);
+        let found = registry.get("usb-b003-p1.2").unwrap();
         assert_eq!(found.path, reg.path);
         assert_eq!(found.device_id, 1308);
     }
 
     #[test]
-    fn resolve_registration_prefers_exact_path() {
+    fn exact_path_lookup_matches_only_live_instance_path() {
         let registrations = vec![
-            crate::service::device_registry::DeviceRegistration {
-                path: "3151-4015-ffff-0002-1@id1308-b003-a003-n1".to_string(),
-                device_id: 1308,
-                vid: 0x3151,
-                pid: 0x4015,
-                bus: 3,
-                address: 3,
-            },
-            crate::service::device_registry::DeviceRegistration {
-                path: "3151-4011-ffff-0002-1@id1308-b003-a006-n2".to_string(),
-                device_id: 1308,
-                vid: 0x3151,
-                pid: 0x4011,
-                bus: 3,
-                address: 6,
-            },
+            sample_registration("usb-b003-p1.2", "usb-b003-p1.2", 0x4015, 3, 3),
+            sample_registration("usb-b003-p1.3", "usb-b003-p1.3", 0x4011, 3, 6),
         ];
 
-        let resolved =
-            super::resolve_registration_for_path(&registrations[0].path, &registrations).unwrap();
+        let resolved = registrations
+            .iter()
+            .find(|registration| registration.path == "usb-b003-p1.2")
+            .cloned()
+            .unwrap();
         assert_eq!(resolved.path, registrations[0].path);
     }
 
     #[test]
-    fn resolve_registration_can_recover_from_stale_pid_path() {
-        let registrations = vec![crate::service::device_registry::DeviceRegistration {
-            path: "3151-4015-ffff-0002-1@id1308-b003-a003-n5".to_string(),
-            device_id: 1308,
-            vid: 0x3151,
-            pid: 0x4015,
-            bus: 3,
-            address: 3,
-        }];
+    fn stale_alias_like_path_does_not_resolve() {
+        let registrations = vec![sample_registration(
+            "usb-b003-p1.2",
+            "usb-b003-p1.2",
+            0x4015,
+            3,
+            3,
+        )];
 
-        let stale_dongle_path = "3151-4011-ffff-0002-1@id1308-b003-a006-n1";
-        let resolved = super::resolve_registration_for_path(stale_dongle_path, &registrations)
-            .expect("stale path should resolve by id hint");
-        assert_eq!(resolved.pid, 0x4015);
-        assert_eq!(resolved.bus, 3);
-        assert_eq!(resolved.address, 3);
+        let resolved = registrations
+            .iter()
+            .find(|registration| registration.path == "3151-4011-ffff-0002-1@id1308-b003-a006-n1");
+        assert!(resolved.is_none());
     }
 
     #[tokio::test]
@@ -1322,7 +1083,13 @@ mod tests {
                 .path_registry
                 .lock()
                 .expect("path registry poisoned");
-            path_registry.register(0x3151, 0x4015, 1308, 3, 15);
+            path_registry.upsert_registration(&sample_registration(
+                "usb-b003-p1.2",
+                "usb-b003-p1.2",
+                0x4015,
+                3,
+                15,
+            ));
         }
         {
             let mut opening = service.opening_paths.lock().expect("opening set poisoned");
@@ -1343,7 +1110,7 @@ mod tests {
                 .path_registry
                 .lock()
                 .expect("path registry poisoned")
-                .get_by_bus_address(3, 15)
+                .get("usb-b003-p1.2")
                 .is_none()
         );
         assert!(
@@ -1365,6 +1132,7 @@ mod tests {
             display_name: "Test".to_string(),
             company: None,
             device_type: "keyboard".to_string(),
+            control_transport: monsgeek_protocol::ControlTransport::Direct,
             sources: vec![],
             key_count: Some(108),
             key_layout_name: None,

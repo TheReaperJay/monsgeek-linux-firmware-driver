@@ -503,6 +503,7 @@ mod tests {
             display_name: "Test".to_string(),
             company: None,
             device_type: "keyboard".to_string(),
+            control_transport: ControlTransport::Direct,
             sources: vec![],
             key_count: Some(108),
             key_layout_name: None,

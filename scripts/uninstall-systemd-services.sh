@@ -20,6 +20,11 @@ echo "==> Removing unit files from /etc/systemd/system"
 rm -f /etc/systemd/system/monsgeek-driver.service
 rm -f /etc/systemd/system/monsgeek-inputd.service
 
+echo "==> Removing installed binaries"
+rm -f /usr/bin/monsgeek-driver
+rm -f /usr/bin/monsgeek-inputd
+rm -f /usr/bin/monsgeek-cli
+
 echo "==> Removing installed device registry files"
 rm -rf /usr/share/monsgeek/protocol/devices
 rmdir /usr/share/monsgeek/protocol 2>/dev/null || true

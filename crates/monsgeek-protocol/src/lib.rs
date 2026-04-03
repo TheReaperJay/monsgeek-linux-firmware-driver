@@ -24,7 +24,7 @@ pub use command_policy::{
 pub use command_schema::{
     CommandResolution, CommandSchemaMap, MAX_PAYLOAD_SIZE, NormalizerFn, PayloadSchema,
 };
-pub use device::{CommandOverrides, DeviceDefinition, FnSysLayer};
+pub use device::{CommandOverrides, ControlTransport, DeviceDefinition, FnSysLayer};
 pub use error::{ProtocolError, RegistryError};
 pub use protocol::{CommandTable, ProtocolFamily, RY5088_COMMANDS, YICHIP_COMMANDS};
 pub use registry::DeviceRegistry;

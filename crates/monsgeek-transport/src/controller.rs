@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use monsgeek_protocol::{ChecksumType, cmd, timing};
+use monsgeek_protocol::{ChecksumType, ControlTransport, cmd, timing};
 
 use crate::error::TransportError;
 use crate::flow_control;
@@ -18,13 +18,15 @@ use crate::usb::{UsbSession, UsbVersionInfo};
 /// web app.
 pub(crate) struct CommandController {
     session: UsbSession,
+    control_transport: ControlTransport,
     last_command_at: Instant,
 }
 
 impl CommandController {
-    pub(crate) fn new(session: UsbSession) -> Self {
+    pub(crate) fn new(session: UsbSession, control_transport: ControlTransport) -> Self {
         Self {
             session,
+            control_transport,
             last_command_at: Instant::now() - Duration::from_millis(timing::DEFAULT_DELAY_MS * 2),
         }
     }
@@ -56,7 +58,8 @@ impl CommandController {
         checksum: ChecksumType,
     ) -> Result<[u8; 64], TransportError> {
         self.enforce_inter_command_delay();
-        let result = flow_control::query_command(&self.session, cmd, data, checksum);
+        let result =
+            flow_control::query_command(&self.session, self.control_transport, cmd, data, checksum);
         self.last_command_at = Instant::now();
         result
     }
@@ -76,20 +79,6 @@ impl CommandController {
     pub(crate) fn query_usb_version_discovery(&mut self) -> Result<UsbVersionInfo, TransportError> {
         self.enforce_inter_command_delay();
         let response = flow_control::query_command_discovery(
-            &self.session,
-            cmd::GET_USB_VERSION,
-            &[],
-            ChecksumType::Bit7,
-        )?;
-        self.last_command_at = Instant::now();
-        UsbVersionInfo::parse(&response)
-    }
-
-    pub(crate) fn query_usb_version_discovery_dongle(
-        &mut self,
-    ) -> Result<UsbVersionInfo, TransportError> {
-        self.enforce_inter_command_delay();
-        let response = flow_control::query_command_discovery_dongle(
             &self.session,
             cmd::GET_USB_VERSION,
             &[],

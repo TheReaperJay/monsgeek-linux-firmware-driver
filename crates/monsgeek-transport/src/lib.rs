@@ -316,6 +316,7 @@ fn spawn_transport(
         cmd_rx,
         event_tx.clone(),
         session,
+        device.control_transport,
         Arc::clone(&running),
         input_processor,
     );
@@ -337,7 +338,7 @@ fn spawn_transport(
 /// kernel can reclaim the normal typing interface if it is available.
 pub fn recover(device: &DeviceDefinition) -> Result<UsbVersionInfo, TransportError> {
     let session = open_matching_session(device, TransportMode::ControlOnly)?;
-    let mut controller = CommandController::new(session);
+    let mut controller = CommandController::new(session, device.control_transport);
     let usb_version = controller.query_usb_version()?;
 
     if usb_version.device_id_i32() != device.id {
@@ -359,7 +360,7 @@ fn open_matching_session(
 
     match primary {
         Ok(session) => {
-            let mut controller = CommandController::new(session);
+            let mut controller = CommandController::new(session, device.control_transport);
             match controller.query_usb_version() {
                 Ok(usb_version) if usb_version.device_id_i32() == device.id => {
                     return Ok(controller.into_session());
@@ -381,7 +382,7 @@ fn open_matching_session(
                         e
                     );
                     let session = controller.into_session().reset_and_reopen()?;
-                    let mut controller = CommandController::new(session);
+                    let mut controller = CommandController::new(session, device.control_transport);
                     let usb_version = controller.query_usb_version()?;
                     if usb_version.device_id_i32() == device.id {
                         return Ok(controller.into_session());

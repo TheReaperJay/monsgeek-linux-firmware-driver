@@ -27,6 +27,9 @@ pub struct Cli {
     #[arg(long, value_name = "BRIDGE_PATH")]
     pub path: Option<String>,
 
+    #[arg(long, value_name = "USB_LOCATION")]
+    pub usb_location: Option<String>,
+
     #[arg(long, value_name = "FIRMWARE_ID")]
     pub device_id: Option<i32>,
 
@@ -267,6 +270,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             let target = resolve_target_device(
                 SelectorOptions {
                     path: cli.path.as_deref(),
+                    usb_location: cli.usb_location.as_deref(),
                     device_id: cli.device_id,
                     model: cli.model.as_deref(),
                 },

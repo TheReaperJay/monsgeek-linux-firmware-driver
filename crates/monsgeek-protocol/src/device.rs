@@ -89,6 +89,18 @@ fn default_device_type() -> String {
     "keyboard".to_string()
 }
 
+fn default_control_transport() -> ControlTransport {
+    ControlTransport::Direct
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlTransport {
+    #[default]
+    Direct,
+    DongleForward,
+}
+
 /// Complete device definition loaded from a per-device JSON file.
 ///
 /// Fields use `#[serde(rename_all = "camelCase")]` to map from camelCase JSON
@@ -108,6 +120,13 @@ pub struct DeviceDefinition {
     /// paths discovered in the field.
     #[serde(default)]
     pub runtime_pids: Vec<u16>,
+    /// Command transport strategy for explicit control sessions.
+    ///
+    /// Runtime PID aliases do not imply a transport strategy. This field
+    /// allows device definitions to opt into a non-default forwarding path
+    /// when control commands genuinely require it.
+    #[serde(default = "default_control_transport")]
+    pub control_transport: ControlTransport,
     /// Internal device name (e.g., "yc3121_m5w_soc").
     pub name: String,
     /// Human-readable display name (e.g., "M5W").

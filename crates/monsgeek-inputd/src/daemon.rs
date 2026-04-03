@@ -1,700 +1,355 @@
-//! Daemon main loop: device discovery, IF0 polling, InputProcessor report
-//! processing, uinput event emission, signal handling, and disconnect/reconnect
-//! lifecycle with udev monitoring.
+//! Multi-device input daemon.
 //!
-//! This module does NOT use the transport thread / `TransportHandle` /
-//! `CommandController` machinery. It directly uses `UsbSession` for IF0 reads
-//! and `InputProcessor` for report processing, avoiding the command channel,
-//! 100ms throttling, and IF2 vendor logic that are irrelevant to input
-//! processing.
+//! The daemon runs a supervisor loop that discovers all supported keyboards via
+//! descriptor-only enumeration and spawns one input worker per device instance.
+//! Each worker owns a dedicated IF0/IF1 session and uinput virtual keyboard.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use monsgeek_inputd::uinput_device::{create_uinput_device, emit_actions};
 use monsgeek_protocol::DeviceRegistry;
-use monsgeek_transport::active_path::{self, ActivePathState};
+use monsgeek_transport::active_path;
 use monsgeek_transport::discovery::{self, DeviceInfo};
 use monsgeek_transport::error::TransportError;
 use monsgeek_transport::input::InputProcessor;
 use monsgeek_transport::usb::{SessionMode, UsbSession};
 
-use monsgeek_inputd::uinput_device::{create_uinput_device, emit_actions};
+use crate::DeviceSelector;
 
 /// Configuration for the daemon's runtime behavior.
+#[derive(Clone)]
 pub struct DaemonConfig {
     /// Software debounce window in milliseconds.
     pub debounce_ms: u64,
-    /// Optional bus:address filter for targeting a specific USB device.
-    pub device_filter: Option<(u8, u8)>,
+    /// Optional exact selectors for restricting monitored devices.
+    pub device_selectors: Vec<DeviceSelector>,
     /// Optional explicit name override for the uinput virtual device.
     pub device_name: Option<String>,
 }
 
-/// Errors specific to daemon lifecycle operations.
-enum DaemonError {
+#[derive(Debug)]
+enum WorkerExit {
     Disconnected,
-    PathHandoff {
-        bus: u8,
-        address: u8,
-        vid: u16,
-        pid: u16,
-    },
-    Transport(TransportError),
-    Io(std::io::Error),
+    Shutdown,
+    Error(String),
 }
 
-impl fmt::Display for DaemonError {
+impl fmt::Display for WorkerExit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DaemonError::Disconnected => write!(f, "keyboard disconnected"),
-            DaemonError::PathHandoff {
-                bus,
-                address,
-                vid,
-                pid,
-            } => write!(
-                f,
-                "active input path moved to {:03}:{:03} (VID 0x{:04X} PID 0x{:04X})",
-                bus, address, vid, pid
-            ),
-            DaemonError::Transport(e) => write!(f, "transport error: {}", e),
-            DaemonError::Io(e) => write!(f, "I/O error: {}", e),
+            Self::Disconnected => write!(f, "device disconnected"),
+            Self::Shutdown => write!(f, "shutdown"),
+            Self::Error(err) => write!(f, "{err}"),
         }
     }
 }
 
-impl From<TransportError> for DaemonError {
-    fn from(e: TransportError) -> Self {
-        DaemonError::Transport(e)
-    }
+struct WorkerHandle {
+    shutdown: Arc<AtomicBool>,
+    join: JoinHandle<WorkerExit>,
 }
 
-impl From<std::io::Error> for DaemonError {
-    fn from(e: std::io::Error) -> Self {
-        DaemonError::Io(e)
-    }
-}
-
-/// Interval between sd_notify watchdog pings in the poll loop.
 const WATCHDOG_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Number of consecutive read errors before treating as disconnect.
-/// On unplug, some kernels return Pipe or Other instead of NoDevice/Io.
-/// These fall outside the explicit Disconnected mapping in read_report_with_timeout.
-/// Consecutive errors with no successful reads indicate the device is gone.
-const DISCONNECT_ERROR_THRESHOLD: u32 = 10;
-/// Freshness window for preferring previously active path on reconnect.
-const ACTIVE_PATH_SELECTION_TTL: Duration = Duration::from_secs(20);
-/// Minimum interval between active-path marker refresh writes.
+const SUPERVISOR_TICK: Duration = Duration::from_secs(1);
 const ACTIVE_PATH_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
-/// Silence window on current path before probing alternate candidates.
-const MODE_HANDOFF_SILENCE_THRESHOLD: Duration = Duration::from_millis(900);
-/// Limit probing to the period shortly after recent activity to avoid
-/// unnecessary ownership churn while the user is idle.
-const MODE_HANDOFF_ACTIVITY_WINDOW: Duration = Duration::from_secs(8);
-/// Minimum spacing between alternate-path probe attempts.
-const MODE_HANDOFF_RECHECK_INTERVAL: Duration = Duration::from_millis(750);
-/// Probe timeout for alternate-path read attempt.
-const MODE_HANDOFF_PROBE_TIMEOUT: Duration = Duration::from_millis(30);
-
-/// Path to the device registry JSON files relative to the binary's compile-time
-/// location. At runtime, the daemon resolves this from the cargo workspace root.
+const DISCONNECT_ERROR_THRESHOLD: u32 = 10;
 const DEVICE_REGISTRY_PATH: &str = "crates/monsgeek-protocol/devices";
 
-/// Run the daemon main loop.
-///
-/// Discovers the target keyboard, claims IF0/IF1 via `SessionMode::InputOnly`,
-/// polls boot protocol HID reports, processes them through `InputProcessor`,
-/// and emits clean key events via uinput. Handles SIGTERM/SIGINT for clean
-/// shutdown and reconnects automatically via udev on keyboard disconnect.
 pub fn run_daemon(config: DaemonConfig) -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&shutdown))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))?;
 
-    log::info!("Discovery mode: descriptor-only (IF2 probe disabled in inputd)");
+    let registry = DeviceRegistry::load_from_directory(&registry_dir())?;
+    let mut workers: HashMap<String, WorkerHandle> = HashMap::new();
+    let mut last_watchdog = Instant::now() - WATCHDOG_INTERVAL;
 
-    let registry = load_registry()?;
-
-    // Prefer reconnecting the last known-good location first, but keep
-    // fallback candidates so the daemon can recover ownership automatically.
-    let mut preferred_location: Option<(u8, u8)> = None;
-    let mut reconnect_vid: Option<u16> = None;
-
-    while !shutdown.load(Ordering::Relaxed) {
-        let candidates =
-            match find_target_devices(&registry, config.device_filter, preferred_location) {
-                Ok(candidates) => candidates,
-                Err(err) => {
-                    log::warn!("No target keyboard available yet: {}", err);
-                    sd_notify::notify(&[sd_notify::NotifyState::Status(
-                        "Waiting for MonsGeek keyboard",
-                    )])
-                    .ok();
-
-                    if let Some(vid) = reconnect_vid {
-                        if let Err(wait_err) =
-                            wait_for_device_udev(&shutdown, vid, Duration::from_secs(3))
-                        {
-                            log::error!("udev wait failed: {}", wait_err);
-                        }
-                    } else {
-                        std::thread::sleep(Duration::from_secs(1));
-                    }
-                    continue;
-                }
-            };
-
-        let mut handled_disconnect = false;
-
-        for device in candidates {
-            reconnect_vid = Some(device.vid);
-
-            log::info!(
-                "Target candidate: {} (ID {}) at {:03}:{:03}",
-                device.display_name,
-                device.device_id,
-                device.bus,
-                device.address
-            );
-
-            let uinput_name = config
-                .device_name
-                .clone()
-                .unwrap_or_else(|| format!("{} (monsgeek-inputd)", device.display_name));
-
-            match try_connect_and_run(&registry, &config, &shutdown, &device, &uinput_name) {
-                Ok(()) => return Ok(()), // Clean shutdown via signal
-                Err(e) => {
-                    log::warn!(
-                        "Candidate {:03}:{:03} failed: {}",
-                        device.bus,
-                        device.address,
-                        e
-                    );
-
-                    if let DaemonError::PathHandoff { bus, address, .. } = e {
-                        preferred_location = Some((bus, address));
-                        handled_disconnect = true;
-                        break;
-                    }
-
-                    if matches!(e, DaemonError::Disconnected) {
-                        preferred_location = Some((device.bus, device.address));
-                        handled_disconnect = true;
-                        // Device was unplugged — wait for udev add event
-                        sd_notify::notify(&[sd_notify::NotifyState::Status(
-                            "Waiting for keyboard reconnect",
-                        )])
-                        .ok();
-                        log::info!("Waiting for keyboard reconnect via udev...");
-                        if let Err(e) = wait_for_device_udev(
-                            &shutdown,
-                            reconnect_vid.unwrap_or(0),
-                            Duration::from_secs(5),
-                        ) {
-                            log::error!("udev wait failed: {}", e);
-                            return Err(e.to_string().into());
-                        }
-
-                        // Settle time: the firmware needs time after re-enumeration
-                        // before it accepts control requests (SET_PROTOCOL, etc).
-                        if !shutdown.load(Ordering::Relaxed) {
-                            log::info!("Waiting 2s for device to settle...");
-                            std::thread::sleep(Duration::from_secs(2));
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        if !handled_disconnect && !shutdown.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(300));
-        }
-    }
-
-    clear_active_path_marker();
-    log::info!("Daemon shut down cleanly");
-    Ok(())
-}
-
-/// Resolve target device candidates from the registry and connected USB devices.
-fn find_target_devices(
-    registry: &DeviceRegistry,
-    device_filter: Option<(u8, u8)>,
-    preferred_location: Option<(u8, u8)>,
-) -> Result<Vec<DeviceInfo>, String> {
-    // Input daemon must stay on descriptor-only discovery and avoid IF2
-    // probing (`GET_USB_VERSION`) to prevent control-path contention.
-    let devices = discovery::find_devices_no_probe(registry).map_err(|e| e.to_string())?;
-    select_target_devices(registry, devices, device_filter, preferred_location)
-}
-
-fn select_target_devices(
-    registry: &DeviceRegistry,
-    mut devices: Vec<DeviceInfo>,
-    device_filter: Option<(u8, u8)>,
-    preferred_location: Option<(u8, u8)>,
-) -> Result<Vec<DeviceInfo>, String> {
-    if devices.is_empty() {
-        return Err("No MonsGeek keyboards found. Is the keyboard connected?".to_string());
-    }
-
-    // Keep auto-selection deterministic across runs.
-    devices.sort_by_key(|d| (d.bus, d.address, d.vid, d.pid));
-
-    if let Some((bus, addr)) = device_filter {
-        let mut filtered: Vec<DeviceInfo> = devices
-            .into_iter()
-            .filter(|d| d.bus == bus && d.address == addr)
-            .collect();
-        if filtered.is_empty() {
-            return Err(format!(
-                "No MonsGeek keyboard found at bus {:03}:{:03}.",
-                bus, addr
-            ));
-        }
-        filtered.sort_by_key(|d| (d.bus, d.address, d.vid, d.pid));
-        return Ok(filtered);
-    }
-
-    // Prefer canonical registry PIDs over runtime alias PIDs for first choice.
-    // Fallback candidates remain in the list for automatic recovery.
-    devices.sort_by_key(|d| registry.find_by_vid_pid(d.vid, d.pid).is_empty());
-
-    if let Some((bus, address)) = preferred_location {
-        devices.sort_by_key(|d| d.bus != bus || d.address != address);
-    }
-
-    // If we recently emitted real input from a path, prefer reconnecting that
-    // location first over VID/PID heuristics.
-    if let Some(active) = active_path::read_active_path(ACTIVE_PATH_SELECTION_TTL) {
-        let matched = devices
-            .iter()
-            .filter(|d| device_matches_active_path(d, &active))
-            .count();
-        if matched > 0 {
-            log::info!(
-                "Preferring active path {:03}:{:03} (VID 0x{:04X} PID 0x{:04X})",
-                active.bus,
-                active.address,
-                active.vid,
-                active.pid
-            );
-            devices.sort_by_key(|d| !device_matches_active_path(d, &active));
-        }
-    }
-
-    if devices.len() > 1 {
-        let preferred = &devices[0];
-        log::warn!(
-            "Multiple MonsGeek keyboards found. Trying {} at {:03}:{:03} first \
-             and auto-falling back if needed. Use --device BUS:ADDR to pin one.",
-            preferred.display_name,
-            preferred.bus,
-            preferred.address
-        );
-    }
-
-    Ok(devices)
-}
-
-/// Attempt to connect to the keyboard and run the input polling loop.
-///
-/// Returns `Ok(())` on clean signal-initiated shutdown.
-/// Returns `Err(DaemonError::Disconnected)` when the keyboard is unplugged.
-fn try_connect_and_run(
-    registry: &DeviceRegistry,
-    config: &DaemonConfig,
-    shutdown: &Arc<AtomicBool>,
-    device: &DeviceInfo,
-    uinput_device_name: &str,
-) -> Result<(), DaemonError> {
-    let session =
-        UsbSession::open_at_with_mode(device.bus, device.address, SessionMode::InputOnly)?;
-
-    // Fresh InputProcessor per connect to clear stale debounce state.
-    let mut processor = InputProcessor::new(config.debounce_ms);
-
-    let mut uinput_dev = create_uinput_device(uinput_device_name)?;
-
+    log::info!("Discovery mode: descriptor-only, multi-device supervisor");
     sd_notify::notify(&[sd_notify::NotifyState::Ready]).ok();
-    sd_notify::notify(&[sd_notify::NotifyState::Status(&format!(
-        "Connected: VID 0x{:04X} PID 0x{:04X}",
-        device.vid, device.pid
-    ))])
-    .ok();
-    log::info!(
-        "Connected and polling IF0 (debounce {}ms)",
-        config.debounce_ms
-    );
-
-    let mut report = [0u8; 8];
-    let mut last_watchdog = Instant::now();
-    let mut last_active_publish = Instant::now() - ACTIVE_PATH_PUBLISH_INTERVAL;
-    let mut last_report_at = Instant::now();
-    let mut last_handoff_probe_at = Instant::now() - MODE_HANDOFF_RECHECK_INTERVAL;
-    let mut consecutive_errors: u32 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
-        // Periodic watchdog ping
         if last_watchdog.elapsed() >= WATCHDOG_INTERVAL {
             sd_notify::notify(&[sd_notify::NotifyState::Watchdog]).ok();
             last_watchdog = Instant::now();
         }
 
-        match session.read_report_with_timeout(&mut report, Duration::from_millis(10)) {
-            Ok(n) if n >= 8 => {
-                consecutive_errors = 0;
-                last_report_at = Instant::now();
-                if last_active_publish.elapsed() >= ACTIVE_PATH_PUBLISH_INTERVAL {
-                    publish_active_path_for_device(device);
-                    last_active_publish = Instant::now();
-                }
-                let actions = processor.process_report(&report);
-                if !actions.is_empty() {
-                    if let Err(e) = emit_actions(&mut uinput_dev, &actions) {
-                        log::error!("uinput emit failed: {}", e);
-                        // uinput failure is fatal for input path
-                        break;
-                    }
-                }
-            }
-            Ok(_) => {
-                // Timeout or short read — endpoint is alive, reset error counter
-                consecutive_errors = 0;
-                let silence = last_report_at.elapsed();
-                if silence >= MODE_HANDOFF_SILENCE_THRESHOLD
-                    && silence <= MODE_HANDOFF_ACTIVITY_WINDOW
-                    && last_handoff_probe_at.elapsed() >= MODE_HANDOFF_RECHECK_INTERVAL
-                {
-                    last_handoff_probe_at = Instant::now();
-                    if let Some(alternate) =
-                        detect_alternate_active_path(registry, config, device)
-                    {
-                        log::warn!(
-                            "No IF0 reports on {:03}:{:03}; detected active input on alternate path {:03}:{:03} (VID 0x{:04X} PID 0x{:04X}). Switching.",
-                            device.bus,
-                            device.address,
-                            alternate.bus,
-                            alternate.address,
-                            alternate.vid,
-                            alternate.pid
-                        );
-                        let release_actions = processor.release_all_keys();
-                        let _ = emit_actions(&mut uinput_dev, &release_actions);
-                        drop(uinput_dev);
-                        drop(session);
-                        clear_active_path_marker();
-                        return Err(DaemonError::PathHandoff {
-                            bus: alternate.bus,
-                            address: alternate.address,
-                            vid: alternate.vid,
-                            pid: alternate.pid,
-                        });
-                    }
-                }
-            }
-            Err(TransportError::Disconnected) => {
-                log::warn!("Keyboard disconnected");
-                let release_actions = processor.release_all_keys();
-                let _ = emit_actions(&mut uinput_dev, &release_actions);
-                drop(uinput_dev);
-                drop(session);
-                clear_active_path_marker();
-                return Err(DaemonError::Disconnected);
-            }
-            Err(e) => {
-                consecutive_errors += 1;
-                if consecutive_errors >= DISCONNECT_ERROR_THRESHOLD {
-                    log::warn!(
-                        "Keyboard disconnected ({} consecutive errors, last: {})",
-                        consecutive_errors,
-                        e
-                    );
-                    let release_actions = processor.release_all_keys();
-                    let _ = emit_actions(&mut uinput_dev, &release_actions);
-                    drop(uinput_dev);
-                    drop(session);
-                    clear_active_path_marker();
-                    return Err(DaemonError::Disconnected);
-                }
-                log::warn!("IF0 poll error ({}x): {}", consecutive_errors, e);
+        let devices = select_devices(
+            discovery::find_devices_no_probe(&registry)?,
+            &config.device_selectors,
+        )?;
+        let live_paths: HashSet<String> = devices
+            .iter()
+            .map(|device| device.instance_path.clone())
+            .collect();
+
+        let stale_paths: Vec<String> = workers
+            .keys()
+            .filter(|path| !live_paths.contains(path.as_str()))
+            .cloned()
+            .collect();
+        for path in stale_paths {
+            if let Some(worker) = workers.remove(&path) {
+                worker.shutdown.store(true, Ordering::Relaxed);
+                let _ = worker.join.join();
             }
         }
+
+        let finished_paths: Vec<String> = workers
+            .iter()
+            .filter(|(_, worker)| worker.join.is_finished())
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in finished_paths {
+            if let Some(worker) = workers.remove(&path) {
+                match worker.join.join() {
+                    Ok(exit) => log::info!("input worker {} exited: {}", path, exit),
+                    Err(_) => log::warn!("input worker {} panicked", path),
+                }
+            }
+        }
+
+        for device in devices {
+            if workers.contains_key(&device.instance_path) {
+                continue;
+            }
+            let worker = spawn_worker(device, config.clone(), Arc::clone(&shutdown));
+            workers.insert(worker.0, worker.1);
+        }
+
+        let online_count = workers.len();
+        sd_notify::notify(&[sd_notify::NotifyState::Status(&format!(
+            "monitoring {} keyboard(s)",
+            online_count
+        ))])
+        .ok();
+
+        std::thread::sleep(SUPERVISOR_TICK);
     }
 
-    // Clean shutdown path: release all held keys before tearing down
-    let release_actions = processor.release_all_keys();
-    let _ = emit_actions(&mut uinput_dev, &release_actions);
-    clear_active_path_marker();
-    // uinput_dev and session are dropped here, releasing resources
+    for (_, worker) in workers {
+        worker.shutdown.store(true, Ordering::Relaxed);
+        let _ = worker.join.join();
+    }
+    let _ = active_path::clear_active_path();
     Ok(())
 }
 
-fn detect_alternate_active_path(
-    registry: &DeviceRegistry,
-    config: &DaemonConfig,
-    current: &DeviceInfo,
-) -> Option<DeviceInfo> {
-    // Only attempt mode handoff when current path is an alias PID. Canonical
-    // paths stay pinned unless they truly disconnect.
-    let current_is_alias = registry.find_by_vid_pid(current.vid, current.pid).is_empty();
-    if !current_is_alias {
-        return None;
-    }
+fn spawn_worker(
+    device: DeviceInfo,
+    config: DaemonConfig,
+    global_shutdown: Arc<AtomicBool>,
+) -> (String, WorkerHandle) {
+    let path = device.instance_path.clone();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let worker_shutdown = Arc::clone(&shutdown);
+    let join = std::thread::Builder::new()
+        .name(format!("monsgeek-input-{}", sanitize_thread_name(&path)))
+        .spawn(move || run_worker(device, config, global_shutdown, worker_shutdown))
+        .expect("failed to spawn input worker");
+    (path, WorkerHandle { shutdown, join })
+}
 
-    let candidates = find_target_devices(registry, config.device_filter, None).ok()?;
-    for candidate in candidates {
-        if candidate.bus == current.bus && candidate.address == current.address {
-            continue;
-        }
-
-        // Probe only canonical targets as handoff destinations.
-        if registry
-            .find_by_vid_pid(candidate.vid, candidate.pid)
-            .is_empty()
-        {
-            continue;
-        }
-
-        let session = match UsbSession::open_at_with_mode(
-            candidate.bus,
-            candidate.address,
-            SessionMode::InputOnly,
-        ) {
+fn run_worker(
+    device: DeviceInfo,
+    config: DaemonConfig,
+    global_shutdown: Arc<AtomicBool>,
+    worker_shutdown: Arc<AtomicBool>,
+) -> WorkerExit {
+    let session =
+        match UsbSession::open_at_with_mode(device.bus, device.address, SessionMode::InputOnly) {
             Ok(session) => session,
-            Err(_) => continue,
+            Err(err) => return WorkerExit::Error(format!("open failed: {err}")),
         };
 
-        let mut report = [0u8; 8];
-        if matches!(
-            session.read_report_with_timeout(&mut report, MODE_HANDOFF_PROBE_TIMEOUT),
-            Ok(n) if n >= 8
-        ) {
-            return Some(candidate);
-        }
-    }
+    let uinput_name = config.device_name.clone().unwrap_or_else(|| {
+        format!(
+            "MonsGeek {} [{}]",
+            device.display_name, device.instance_path
+        )
+    });
+    let mut uinput_dev = match create_uinput_device(&uinput_name) {
+        Ok(device) => device,
+        Err(err) => return WorkerExit::Error(format!("uinput open failed: {err}")),
+    };
+    let mut processor = InputProcessor::new(config.debounce_ms);
+    let mut report = [0u8; 8];
+    let mut last_active_publish = Instant::now() - ACTIVE_PATH_PUBLISH_INTERVAL;
+    let mut consecutive_errors = 0u32;
 
-    None
-}
-
-fn device_matches_active_path(device: &DeviceInfo, active: &ActivePathState) -> bool {
-    device.bus == active.bus
-        && device.address == active.address
-        && device.vid == active.vid
-        && device.pid == active.pid
-}
-
-fn publish_active_path_for_device(device: &DeviceInfo) {
-    if let Err(err) =
-        active_path::publish_active_path(device.vid, device.pid, device.bus, device.address)
-    {
-        log::warn!(
-            "Failed to publish active path {:03}:{:03} (VID 0x{:04X} PID 0x{:04X}): {}",
-            device.bus,
-            device.address,
-            device.vid,
-            device.pid,
-            err
-        );
-    }
-}
-
-fn clear_active_path_marker() {
-    if let Err(err) = active_path::clear_active_path() {
-        log::warn!("Failed to clear active path marker: {}", err);
-    }
-}
-
-/// Block until a USB device with the given VID appears via udev, or shutdown
-/// is signaled.
-fn wait_for_device_udev(
-    shutdown: &Arc<AtomicBool>,
-    vid: u16,
-    timeout: Duration,
-) -> Result<(), DaemonError> {
-    let builder = udev::MonitorBuilder::new()
-        .map_err(|e| DaemonError::Io(std::io::Error::other(format!("udev monitor: {}", e))))?;
-    let builder = builder
-        .match_subsystem("usb")
-        .map_err(|e| DaemonError::Io(std::io::Error::other(format!("udev filter: {}", e))))?;
-    let socket = builder
-        .listen()
-        .map_err(|e| DaemonError::Io(std::io::Error::other(format!("udev listen: {}", e))))?;
-
-    let fd = socket.as_raw_fd();
-    let vid_str = format!("{:04x}", vid);
-    let started = Instant::now();
-
-    log::debug!("udev monitor started for VID 0x{}", vid_str);
-
-    loop {
-        if shutdown.load(Ordering::Relaxed) {
-            return Ok(());
-        }
-
-        if started.elapsed() >= timeout {
-            log::debug!(
-                "udev wait timed out after {}s for VID 0x{}",
-                timeout.as_secs(),
-                vid_str
-            );
-            return Ok(());
-        }
-
-        let mut fds = [libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-
-        let ret = unsafe { libc::poll(fds.as_mut_ptr(), 1, 1000) };
-        if ret <= 0 {
-            continue;
-        }
-
-        let Some(event) = socket.iter().next() else {
-            continue;
-        };
-
-        let matches_vid = event
-            .property_value("PRODUCT")
-            .and_then(|v| v.to_str())
-            .map(|v| v.starts_with(&vid_str))
-            .unwrap_or(false);
-
-        if !matches_vid {
-            continue;
-        }
-
-        if matches!(event.event_type(), udev::EventType::Add) {
-            log::info!("udev: keyboard reconnected (VID 0x{})", vid_str);
-            // Brief settle time for the USB stack to finish enumeration
-            std::thread::sleep(Duration::from_millis(500));
-            return Ok(());
-        }
-    }
-}
-
-/// Load the device registry from the standard path.
-fn load_registry() -> Result<DeviceRegistry, Box<dyn std::error::Error>> {
-    // Resolve registry locations in priority order:
-    // 1) explicit override (`MONSGEEK_DEVICE_REGISTRY_DIR`)
-    // 2) packaged install path
-    // 3) cwd-relative workspace path
-    // 4) executable-relative fallback
-    let mut candidates = Vec::new();
-
-    if let Ok(path) = std::env::var("MONSGEEK_DEVICE_REGISTRY_DIR") {
-        candidates.push(Path::new(&path).to_path_buf());
-    }
-
-    candidates.push(Path::new("/usr/share/monsgeek/protocol/devices").to_path_buf());
-    candidates.push(Path::new(DEVICE_REGISTRY_PATH).to_path_buf());
-    candidates.push(
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.parent()
-                    .map(|p| p.join("../../").join(DEVICE_REGISTRY_PATH))
-            })
-            .unwrap_or_default(),
+    log::info!(
+        "worker start path={} location={} debounce={}ms",
+        device.instance_path,
+        device.usb_location,
+        config.debounce_ms
     );
 
-    for path in &candidates {
-        if path.is_dir() {
-            return DeviceRegistry::load_from_directory(path).map_err(|e| {
-                format!(
-                    "Failed to load device registry from {}: {}",
-                    path.display(),
-                    e
-                )
-                .into()
-            });
+    loop {
+        if global_shutdown.load(Ordering::Relaxed) || worker_shutdown.load(Ordering::Relaxed) {
+            let _ = emit_actions(&mut uinput_dev, &processor.release_all_keys());
+            let _ = active_path::remove_active_path(&device.instance_path);
+            return WorkerExit::Shutdown;
+        }
+
+        match session.read_report_with_timeout(&mut report, Duration::from_millis(10)) {
+            Ok(n) if n >= 8 => {
+                consecutive_errors = 0;
+                if last_active_publish.elapsed() >= ACTIVE_PATH_PUBLISH_INTERVAL {
+                    let _ = active_path::publish_active_path(
+                        &device.instance_path,
+                        &device.usb_location,
+                        device.vid,
+                        device.pid,
+                        device.bus,
+                        device.address,
+                    );
+                    last_active_publish = Instant::now();
+                }
+                let actions = processor.process_report(&report);
+                if !actions.is_empty()
+                    && let Err(err) = emit_actions(&mut uinput_dev, &actions)
+                {
+                    let _ = active_path::remove_active_path(&device.instance_path);
+                    return WorkerExit::Error(format!("uinput emit failed: {err}"));
+                }
+            }
+            Ok(_) => {
+                consecutive_errors = 0;
+            }
+            Err(TransportError::Disconnected) => {
+                let _ = emit_actions(&mut uinput_dev, &processor.release_all_keys());
+                let _ = active_path::remove_active_path(&device.instance_path);
+                return WorkerExit::Disconnected;
+            }
+            Err(err) => {
+                consecutive_errors += 1;
+                if consecutive_errors >= DISCONNECT_ERROR_THRESHOLD {
+                    let _ = emit_actions(&mut uinput_dev, &processor.release_all_keys());
+                    let _ = active_path::remove_active_path(&device.instance_path);
+                    return WorkerExit::Error(format!(
+                        "disconnect after {} consecutive errors: {}",
+                        consecutive_errors, err
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn select_devices(
+    mut devices: Vec<DeviceInfo>,
+    selectors: &[DeviceSelector],
+) -> Result<Vec<DeviceInfo>, String> {
+    if devices.is_empty() {
+        return Err("No MonsGeek keyboards found. Is the keyboard connected?".to_string());
+    }
+
+    devices.sort_by_key(|device| device.instance_path.clone());
+
+    if !selectors.is_empty() {
+        devices.retain(|device| {
+            selectors.iter().any(|selector| match selector {
+                DeviceSelector::BusAddress(bus, address) => {
+                    device.bus == *bus && device.address == *address
+                }
+                DeviceSelector::InstancePath(path) => device.instance_path == *path,
+                DeviceSelector::UsbLocation(location) => device.usb_location == *location,
+            })
+        });
+        if devices.is_empty() {
+            return Err(format!(
+                "No MonsGeek keyboard matched selectors: {}",
+                selectors
+                    .iter()
+                    .map(selector_label)
+                    .collect::<Vec<&str>>()
+                    .join(", ")
+            ));
         }
     }
 
-    Err(format!(
-        "Device registry not found at any of: {}",
-        candidates
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-    .into())
+    Ok(devices)
+}
+
+fn selector_label(selector: &DeviceSelector) -> &str {
+    match selector {
+        DeviceSelector::BusAddress(_, _) => "bus:addr",
+        DeviceSelector::InstancePath(_) => "instance-path",
+        DeviceSelector::UsbLocation(_) => "usb-location",
+    }
+}
+
+fn sanitize_thread_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+fn registry_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("monsgeek-protocol")
+        .join("devices")
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(DEVICE_REGISTRY_PATH).to_path_buf())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use monsgeek_transport::discovery::ConnectionMode;
 
-    fn registry() -> DeviceRegistry {
-        let devices_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../monsgeek-protocol")
-            .join("devices");
-        DeviceRegistry::load_from_directory(&devices_dir).expect("registry load failed")
-    }
-
-    fn fake_device(device_id: i32, pid: u16, bus: u8, address: u8) -> DeviceInfo {
+    fn fake_device(path: &str, bus: u8, address: u8) -> DeviceInfo {
         DeviceInfo {
+            instance_path: path.to_string(),
+            usb_location: path.to_string(),
             vid: 0x3151,
-            pid,
-            device_id,
-            display_name: format!("Device-{device_id}"),
-            name: format!("dev-{device_id}"),
+            pid: 0x4015,
+            canonical_pid: 0x4015,
+            device_id: 1308,
+            display_name: "M5W".to_string(),
+            name: "yc3121_m5w_soc".to_string(),
+            connection_mode: ConnectionMode::Usb,
             bus,
             address,
         }
     }
 
     #[test]
-    fn select_targets_prefers_canonical_pid_for_runtime_alias() {
-        let registry = registry();
-        let candidates = vec![
-            fake_device(1308, 0x4011, 1, 2), // runtime alias PID
-            fake_device(1308, 0x4015, 1, 3), // canonical PID
+    fn select_devices_filters_by_bus_address() {
+        let devices = vec![
+            fake_device("usb-b003-p1.2", 3, 15),
+            fake_device("usb-b003-p1.3", 3, 16),
         ];
-
-        let selected =
-            select_target_devices(&registry, candidates, None, None).expect("selection failed");
-        assert_eq!(selected[0].pid, 0x4015);
-        assert_eq!(selected[0].bus, 1);
-        assert_eq!(selected[0].address, 3);
-    }
-
-    #[test]
-    fn select_targets_applies_preferred_location_ordering() {
-        let registry = registry();
-        let candidates = vec![
-            fake_device(1308, 0x4015, 1, 2),
-            fake_device(2299, 0x5002, 1, 3),
-        ];
-
-        let selected = select_target_devices(&registry, candidates, None, Some((1, 3)))
-            .expect("selection failed");
-        assert_eq!(selected[0].bus, 1);
-        assert_eq!(selected[0].address, 3);
-    }
-
-    #[test]
-    fn select_targets_filters_by_bus_address() {
-        let registry = registry();
-        let candidates = vec![
-            fake_device(1308, 0x4015, 1, 2),
-            fake_device(2299, 0x5002, 1, 3),
-        ];
-
-        let selected = select_target_devices(&registry, candidates, Some((1, 3)), None)
-            .expect("selection failed");
+        let selected = select_devices(devices, &[DeviceSelector::BusAddress(3, 16)])
+            .expect("device should match");
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].bus, 1);
-        assert_eq!(selected[0].address, 3);
+        assert_eq!(selected[0].address, 16);
+    }
+
+    #[test]
+    fn select_devices_filters_by_usb_location() {
+        let devices = vec![
+            fake_device("usb-b003-p1.2", 3, 15),
+            fake_device("usb-b003-p1.3", 3, 16),
+        ];
+        let selected = select_devices(
+            devices,
+            &[DeviceSelector::UsbLocation("usb-b003-p1.2".to_string())],
+        )
+        .expect("device should match");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].instance_path, "usb-b003-p1.2");
+    }
+
+    #[test]
+    fn sanitize_thread_name_replaces_symbols() {
+        assert_eq!(sanitize_thread_name("usb-b003-p1.2"), "usb_b003_p1_2");
     }
 }

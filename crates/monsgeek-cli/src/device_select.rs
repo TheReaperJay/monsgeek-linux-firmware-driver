@@ -8,24 +8,31 @@ use monsgeek_protocol::{DeviceDefinition, DeviceRegistry};
 #[derive(Debug, Clone)]
 pub struct OnlineDevice {
     pub path: String,
+    pub usb_location: String,
     pub device_id: i32,
     pub vid: u16,
     pub pid: u16,
+    pub canonical_pid: u16,
+    pub connection_mode: String,
     pub definition: DeviceDefinition,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedTargetDevice {
     pub path: String,
+    pub usb_location: String,
     pub device_id: i32,
     pub vid: u16,
     pub pid: u16,
+    pub canonical_pid: u16,
+    pub connection_mode: String,
     pub definition: DeviceDefinition,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SelectorOptions<'a> {
     pub path: Option<&'a str>,
+    pub usb_location: Option<&'a str>,
     pub device_id: Option<i32>,
     pub model: Option<&'a str>,
 }
@@ -74,9 +81,12 @@ pub fn supported_online_devices(init: &DeviceList, registry: &DeviceRegistry) ->
 
         devices.push(OnlineDevice {
             path: dev.path.clone(),
+            usb_location: dev.usb_location.clone(),
             device_id: definition.id,
             vid,
             pid,
+            canonical_pid: dev.canonical_pid as u16,
+            connection_mode: dev.connection_mode.clone(),
             definition,
         });
     }
@@ -99,7 +109,18 @@ pub fn resolve_target_device(
         return Ok(to_resolved(selected));
     }
 
-    // 2) --device-id
+    // 2) --usb-location
+    if let Some(usb_location) = selectors.usb_location {
+        let selected = online_supported
+            .iter()
+            .find(|device| device.usb_location == usb_location)
+            .ok_or_else(|| {
+                anyhow!("no supported online device matched --usb-location {usb_location}")
+            })?;
+        return Ok(to_resolved(selected));
+    }
+
+    // 3) --device-id
     if let Some(device_id) = selectors.device_id {
         let matches: Vec<&OnlineDevice> = online_supported
             .iter()
@@ -109,12 +130,12 @@ pub fn resolve_target_device(
             [single] => Ok(to_resolved(single)),
             [] => bail!("no supported online device matched --device-id {device_id}"),
             _ => bail!(
-                "multiple devices matched --device-id {device_id}; refine with --path <bridge-path>"
+                "multiple devices matched --device-id {device_id}; refine with --path <instance-path> or --usb-location <usb-location>"
             ),
         };
     }
 
-    // 3) --model
+    // 4) --model
     if let Some(model) = selectors.model {
         let requested = model.trim().to_ascii_lowercase();
         let matching_ids: HashSet<i32> = registry
@@ -138,16 +159,18 @@ pub fn resolve_target_device(
         return match matches.as_slice() {
             [single] => Ok(to_resolved(single)),
             [] => bail!("model {model} is known but not currently online"),
-            _ => bail!("model {model} matched multiple online devices; refine with --path"),
+            _ => bail!(
+                "model {model} matched multiple online devices; refine with --path or --usb-location"
+            ),
         };
     }
 
-    // 4) auto-select single supported online device only.
+    // 5) auto-select single supported online device only.
     match online_supported {
         [single] => Ok(to_resolved(single)),
         [] => bail!("no supported online devices are currently available"),
         _ => bail!(
-            "multiple supported devices are online; select one with --path <bridge-path>, --device-id <firmware-id>, or --model <slug>"
+            "multiple supported devices are online; select one with --path <instance-path>, --usb-location <usb-location>, --device-id <firmware-id>, or --model <slug>"
         ),
     }
 }
@@ -176,9 +199,12 @@ pub fn preferred_model_slug(definition: &DeviceDefinition) -> String {
 fn to_resolved(selected: &OnlineDevice) -> ResolvedTargetDevice {
     ResolvedTargetDevice {
         path: selected.path.clone(),
+        usb_location: selected.usb_location.clone(),
         device_id: selected.device_id,
         vid: selected.vid,
         pid: selected.pid,
+        canonical_pid: selected.canonical_pid,
+        connection_mode: selected.connection_mode.clone(),
         definition: selected.definition.clone(),
     }
 }

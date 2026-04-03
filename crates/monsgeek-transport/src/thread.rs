@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use monsgeek_protocol::ChecksumType;
+use monsgeek_protocol::{ChecksumType, ControlTransport};
 
 use crate::controller::CommandController;
 use crate::error::TransportError;
@@ -84,13 +84,21 @@ pub(crate) fn spawn_transport_thread(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    control_transport: ControlTransport,
     running: Arc<AtomicBool>,
     input_processor: Option<InputProcessor>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("monsgeek-transport".into())
         .spawn(move || {
-            transport_loop(cmd_rx, event_tx, session, running, input_processor);
+            transport_loop(
+                cmd_rx,
+                event_tx,
+                session,
+                control_transport,
+                running,
+                input_processor,
+            );
         })
         .expect("failed to spawn transport thread")
 }
@@ -102,10 +110,11 @@ fn transport_loop(
     cmd_rx: Receiver<CommandRequest>,
     event_tx: Sender<TransportEvent>,
     session: UsbSession,
+    control_transport: ControlTransport,
     running: Arc<AtomicBool>,
     mut input_processor: Option<InputProcessor>,
 ) {
-    let mut controller = CommandController::new(session);
+    let mut controller = CommandController::new(session, control_transport);
 
     loop {
         let request = if input_processor.is_some() {
@@ -424,6 +433,7 @@ mod tests {
             crossbeam_channel::Receiver<CommandRequest>,
             crossbeam_channel::Sender<TransportEvent>,
             crate::usb::UsbSession,
+            ControlTransport,
             Arc<AtomicBool>,
             Option<InputProcessor>,
         ) -> std::thread::JoinHandle<()> = spawn_transport_thread;

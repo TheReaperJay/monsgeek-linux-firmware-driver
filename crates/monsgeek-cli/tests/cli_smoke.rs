@@ -26,6 +26,9 @@ fn fixture_device(path: &str, definition: &DeviceDefinition) -> DjDev {
             is_online: true,
             vid: definition.vid as u32,
             pid: definition.pid as u32,
+            usb_location: path.to_string(),
+            canonical_pid: definition.pid as u32,
+            connection_mode: "usb".to_string(),
         })),
     }
 }
@@ -57,7 +60,9 @@ fn parser_recognizes_all_required_subcommands_and_selector_flags() {
         "--endpoint",
         "http://127.0.0.1:3814",
         "--path",
-        "3151-4015-ffff-0002-1",
+        "usb-b003-p1.2",
+        "--usb-location",
+        "usb-b003-p1.2",
         "--device-id",
         "1308",
         "--model",
@@ -228,6 +233,7 @@ fn multiple_devices_requires_selector() {
 
     let text = err.to_string();
     assert!(text.contains("--path"));
+    assert!(text.contains("--usb-location"));
     assert!(text.contains("--device-id"));
     assert!(text.contains("--model"));
 }
@@ -243,6 +249,7 @@ fn model_selector_filters_by_registry_slug_name() {
     let selected = device_select::resolve_target_device(
         device_select::SelectorOptions {
             path: None,
+            usb_location: None,
             device_id: None,
             model: Some(target_slug.as_str()),
         },
