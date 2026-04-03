@@ -17,6 +17,7 @@ import argparse
 import ctypes
 import math
 import os
+import re
 import struct
 import sys
 import time
@@ -77,15 +78,67 @@ def key_name(code):
     return KEY_NAMES.get(code, f"KEY_{code}")
 
 
-def find_monsgeek_event_device():
+def list_monsgeek_event_devices():
+    devices = []
     by_id = Path("/dev/input/by-id")
-    for link in by_id.iterdir():
-        if "MonsGeek_Keyboard-event-kbd" in link.name and "2.4G" not in link.name:
-            return str(link.resolve())
-    for link in by_id.iterdir():
-        if "MonsGeek" in link.name and "event-kbd" in link.name:
-            return str(link.resolve())
-    return None
+    if by_id.exists():
+        for link in sorted(by_id.iterdir()):
+            name_lc = link.name.lower()
+            if "monsgeek" in name_lc and "event-kbd" in name_lc:
+                try:
+                    devices.append((link.name, str(link.resolve())))
+                except OSError:
+                    continue
+
+    # Also scan /proc so we include virtual inputd keyboards even when by-id exists.
+    proc_devices = Path("/proc/bus/input/devices")
+    if proc_devices.exists():
+        try:
+            content = proc_devices.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            content = ""
+        blocks = [b for b in content.split("\n\n") if "monsgeek" in b.lower()]
+        for block in blocks:
+            name_match = re.search(r'N: Name="([^"]+)"', block)
+            handlers_match = re.search(r"H: Handlers=(.+)", block)
+            if not handlers_match:
+                continue
+            handlers = handlers_match.group(1).split()
+            event_nodes = [h for h in handlers if h.startswith("event")]
+            display = name_match.group(1) if name_match else "MonsGeek"
+            for event_node in event_nodes:
+                devices.append((f"{display} ({event_node})", f"/dev/input/{event_node}"))
+
+    # Deduplicate by resolved path while preserving order.
+    seen_paths = set()
+    deduped = []
+    for name, path in devices:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        deduped.append((name, path))
+    return deduped
+
+
+def find_monsgeek_event_device(prefer_wireless=False):
+    devices = list_monsgeek_event_devices()
+    if not devices:
+        return None, devices
+
+    if prefer_wireless:
+        for name, path in devices:
+            if "2.4g" in name.lower():
+                return path, devices
+    else:
+        # Prefer the monsgeek-inputd virtual keyboard for end-to-end typing latency.
+        for name, path in devices:
+            if "inputd" in name.lower():
+                return path, devices
+        for name, path in devices:
+            if "2.4g" not in name.lower():
+                return path, devices
+
+    return devices[0][1], devices
 
 
 def check_input_clock(dev_path):
@@ -169,12 +222,45 @@ def print_histogram(values_us, label, bin_width_us=50):
 def main():
     parser = argparse.ArgumentParser(description="Trace keyboard input latency")
     parser.add_argument("--duration", type=int, default=0, help="Auto-stop after N seconds (0=manual Ctrl+C)")
+    parser.add_argument("--device", default="", help="Explicit input device path (e.g. /dev/input/event8)")
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="List detected MonsGeek/inputd keyboard event devices and exit",
+    )
+    parser.add_argument(
+        "--prefer-wireless",
+        action="store_true",
+        help="When auto-selecting device, prefer 2.4G event node instead of wired",
+    )
     args = parser.parse_args()
 
-    dev_path = find_monsgeek_event_device()
-    if not dev_path:
-        print("ERROR: No MonsGeek keyboard event device found", file=sys.stderr)
-        sys.exit(1)
+    detected = list_monsgeek_event_devices()
+    if args.list_devices:
+        if not detected:
+            print("No MonsGeek keyboard event devices found.")
+            sys.exit(1)
+        print("Detected MonsGeek keyboard event devices:")
+        for name, path in detected:
+            print(f"  {name} -> {path}")
+        return
+
+    if args.device:
+        dev_path = args.device
+        if not Path(dev_path).exists():
+            print(f"ERROR: input device path does not exist: {dev_path}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        dev_path, detected = find_monsgeek_event_device(prefer_wireless=args.prefer_wireless)
+        if not dev_path:
+            print("ERROR: No MonsGeek keyboard event device found", file=sys.stderr)
+            sys.exit(1)
+
+    if detected:
+        print("Detected MonsGeek keyboard event devices:")
+        for name, path in detected:
+            print(f"  {name} -> {path}")
+        print()
 
     print(f"Device: {dev_path}")
     print()
