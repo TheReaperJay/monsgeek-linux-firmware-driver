@@ -10,6 +10,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYSTEMD_DIR="/etc/systemd/system"
 REGISTRY_INSTALL_DIR="/usr/share/monsgeek/protocol/devices"
 CONFIG_INSTALL_DIR="/etc/monsgeek"
+MODPROBE_DIR="/etc/modprobe.d"
 
 for cmd in cp systemctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -30,6 +31,11 @@ echo "==> Installing transport runtime config"
 mkdir -p "$CONFIG_INSTALL_DIR"
 cp "$ROOT_DIR/deploy/config/transport-config.json" "$CONFIG_INSTALL_DIR/transport-config.json"
 
+echo "==> Installing usbhid quirk config"
+mkdir -p "$MODPROBE_DIR"
+cp "$ROOT_DIR/crates/monsgeek-transport/deploy/monsgeek-hid-usbhid.conf" \
+   "$MODPROBE_DIR/monsgeek-hid-usbhid.conf"
+
 echo "==> Reloading systemd daemon"
 systemctl daemon-reload
 
@@ -47,3 +53,5 @@ for svc in monsgeek-driver.service monsgeek-inputd.service; do
     active="$(systemctl is-active "$svc")"
     echo "$svc enabled=$enabled active=$active"
 done
+
+echo "NOTE: usbhid quirks apply after reboot (or after reloading the built-in usbhid stack)."

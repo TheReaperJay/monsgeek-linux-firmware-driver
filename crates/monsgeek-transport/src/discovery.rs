@@ -320,6 +320,36 @@ fn probe_candidate_identity(
 ) -> ProbeCandidateResult {
     let started = Instant::now();
 
+    // Runtime alias PIDs are support hints, not proof that the device must be
+    // driven through the dongle-forward path. When a candidate maps to exactly
+    // one registry definition, prefer that descriptor-only identity over
+    // destructive GET_USB_VERSION retries and USB resets.
+    if strategy == ProbeStrategy::AliasDongle
+        && let Some(definition) = unique_runtime_match(registry, candidate)
+    {
+        log::info!(
+            "Probe alias shortcut bus={} addr={} (VID:0x{:04X} PID:0x{:04X}) -> device ID {} ({})",
+            candidate.bus,
+            candidate.address,
+            candidate.vid,
+            candidate.pid,
+            definition.id,
+            definition.display_name
+        );
+        return ProbeCandidateResult {
+            attempt: finalize_attempt(
+                candidate,
+                strategy,
+                ProbeOutcome::Identified,
+                Some(definition.id),
+                None,
+                false,
+                started,
+            ),
+            info: Some(device_info_from_definition(definition, candidate)),
+        };
+    }
+
     let session = match UsbSession::open_at(candidate.bus, candidate.address) {
         Ok(session) => session,
         Err(err) => {
@@ -635,7 +665,6 @@ pub fn last_probe_report() -> Option<ProbeReport> {
         .clone()
 }
 
-#[cfg(test)]
 fn unique_runtime_match(
     registry: &DeviceRegistry,
     candidate: UsbCandidate,

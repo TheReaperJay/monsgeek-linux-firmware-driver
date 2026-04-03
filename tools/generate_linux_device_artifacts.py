@@ -33,6 +33,8 @@ def load_pairs() -> list[tuple[int, int]]:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         pairs.add((int(data["vid"]), int(data["pid"])))
+        for runtime_pid in data.get("runtimePids", []):
+            pairs.add((int(data["vid"]), int(runtime_pid)))
     return sorted(pairs)
 
 

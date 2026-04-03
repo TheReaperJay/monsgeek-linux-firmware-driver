@@ -29,5 +29,8 @@ echo "==> Removing transport runtime config"
 rm -f /etc/monsgeek/transport-config.json
 rmdir /etc/monsgeek 2>/dev/null || true
 
+echo "==> Removing usbhid quirk config"
+rm -f /etc/modprobe.d/monsgeek-hid-usbhid.conf
+
 echo "==> Reloading systemd daemon"
 systemctl daemon-reload

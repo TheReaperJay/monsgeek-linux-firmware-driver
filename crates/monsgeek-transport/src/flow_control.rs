@@ -428,9 +428,9 @@ fn try_read_cached_response_after_flush(session: &UsbSession, cmd_byte: u8) -> O
         return None;
     }
     std::thread::sleep(Duration::from_millis(8));
-    let flushed = match session.vendor_get_report_with_timeout(Duration::from_millis(
-        FLUSH_READ_TIMEOUT_MS,
-    )) {
+    let flushed = match session
+        .vendor_get_report_with_timeout(Duration::from_millis(FLUSH_READ_TIMEOUT_MS))
+    {
         Ok(flushed) => flushed,
         Err(err) => {
             log::debug!("dongle-forward flush read failed: {}", err);
