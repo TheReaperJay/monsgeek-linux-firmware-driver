@@ -1,17 +1,49 @@
-use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
+use evdev::{AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode};
 use monsgeek_transport::input::KeyAction;
 use monsgeek_transport::keymap::all_keycodes;
+
+const DEFAULT_VIRTUAL_DEVICE_VERSION: u16 = 0x0111;
+
+/// Identity metadata exposed by the uinput virtual keyboard.
+///
+/// Using the physical device VID/PID avoids the evdev crate's placeholder
+/// 0x1234:0x5678 identifiers, which confuse downstream tooling and make the
+/// synthetic keyboard look unrelated to the board it represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtualKeyboardIdentity {
+    pub vendor: u16,
+    pub product: u16,
+    pub version: u16,
+}
+
+impl VirtualKeyboardIdentity {
+    pub fn new(vendor: u16, product: u16) -> Self {
+        Self {
+            vendor,
+            product,
+            version: DEFAULT_VIRTUAL_DEVICE_VERSION,
+        }
+    }
+
+    fn input_id(self) -> InputId {
+        InputId::new(BusType::BUS_USB, self.vendor, self.product, self.version)
+    }
+}
 
 /// Create a uinput virtual keyboard device with all keycodes currently mapped
 /// by the transport keymap table.
 /// The device has a distinct name so it is distinguishable from the physical keyboard.
-pub fn create_uinput_device(device_name: &str) -> std::io::Result<evdev::uinput::VirtualDevice> {
+pub fn create_uinput_device(
+    device_name: &str,
+    identity: VirtualKeyboardIdentity,
+) -> std::io::Result<evdev::uinput::VirtualDevice> {
     let mut keys = AttributeSet::<KeyCode>::new();
     for keycode in all_keycodes() {
         keys.insert(KeyCode::new(keycode));
     }
 
     evdev::uinput::VirtualDevice::builder()?
+        .input_id(identity.input_id())
         .name(device_name)
         .with_keys(&keys)?
         .build()
@@ -43,6 +75,16 @@ pub fn emit_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_virtual_keyboard_identity_uses_real_vid_pid() {
+        let identity = VirtualKeyboardIdentity::new(0x3151, 0x4015);
+        let input_id = identity.input_id();
+        assert_eq!(input_id.vendor(), 0x3151);
+        assert_eq!(input_id.product(), 0x4015);
+        assert_eq!(input_id.version(), DEFAULT_VIRTUAL_DEVICE_VERSION);
+        assert_eq!(input_id.bus_type(), BusType::BUS_USB);
+    }
 
     #[test]
     fn test_key_action_to_input_event_press() {
@@ -109,7 +151,10 @@ mod tests {
     #[cfg(feature = "hardware")]
     #[test]
     fn test_create_uinput_device() {
-        let device = create_uinput_device("monsgeek-inputd-test");
+        let device = create_uinput_device(
+            "monsgeek-inputd-test",
+            VirtualKeyboardIdentity::new(0x3151, 0x4015),
+        );
         assert!(
             device.is_ok(),
             "Failed to create uinput device: {:?}",

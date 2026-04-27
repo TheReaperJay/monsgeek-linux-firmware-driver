@@ -1,7 +1,13 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_DEBOUNCE_MS: u64 = 0;
+/// Default software debounce for the userspace input path.
+///
+/// Repo diagnostics already measured real release→repress bounce in the
+/// 6-12ms range on MonsGeek boards, and the hardware-gated input daemon tests
+/// use 15ms as the reference value. Shipping 0ms makes the live path ignore the
+/// very bounce the daemon exists to filter.
+const DEFAULT_DEBOUNCE_MS: u64 = 15;
 
 #[derive(Deserialize, Default, Debug, Clone)]
 pub struct Config {
@@ -41,7 +47,7 @@ pub fn load_config() -> Config {
 }
 
 /// Resolve the effective debounce_ms value from CLI flag, config file, and hardcoded default.
-/// Priority: CLI flag > config file > 0ms hardcoded fallback.
+/// Priority: CLI flag > config file > measured fallback (15ms).
 pub fn resolve_debounce_ms(cli_flag: Option<u64>, config: &Config) -> u64 {
     cli_flag
         .or(config.debounce_ms)
@@ -77,7 +83,7 @@ mod tests {
     #[test]
     fn test_resolve_debounce_hardcoded_fallback() {
         let config = Config::default();
-        assert_eq!(resolve_debounce_ms(None, &config), 0);
+        assert_eq!(resolve_debounce_ms(None, &config), 15);
     }
 
     #[test]

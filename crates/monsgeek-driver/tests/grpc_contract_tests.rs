@@ -141,6 +141,30 @@ async fn grpc_read_raw_feature_returns_data() {
 }
 
 #[tokio::test]
+async fn grpc_query_raw_returns_data_without_echo_requirement() {
+    let mut reply = [0u8; 64];
+    reply[0] = 0x00;
+    reply[1] = 0x00;
+    reply[2] = 0xE3;
+    reply[3] = 0x00;
+    let mock = MockTransport::with_responses(vec![reply]);
+
+    let out = bridge_transport::query_raw_command_with(
+        mock.clone(),
+        vec![0x89, 0x00, 0xFF, 0x01, 0x00],
+        ChecksumType::Bit7,
+    )
+    .await
+    .expect("raw query should succeed");
+
+    assert_eq!(out[..4], [0x00, 0x00, 0xE3, 0x00]);
+    let sent = mock.sent_commands();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].cmd, 0x89);
+    assert_eq!(sent[0].payload, vec![0x00, 0xFF, 0x01, 0x00]);
+}
+
+#[tokio::test]
 async fn grpc_send_msg_forwards_with_checksum() {
     let mock = MockTransport::new();
     bridge_transport::send_command_with(mock.clone(), vec![0x06, 0x05], ChecksumType::Bit7)

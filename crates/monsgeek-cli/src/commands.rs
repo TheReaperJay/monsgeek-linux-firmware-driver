@@ -40,6 +40,38 @@ pub struct CommandExecution {
     pub detail: Option<String>,
 }
 
+const KEYMATRIX_ENTRIES_PER_PAGE: usize = 16;
+
+fn keymap_page_for_index(key_index: u8) -> u8 {
+    (key_index as usize / KEYMATRIX_ENTRIES_PER_PAGE) as u8
+}
+
+fn keymap_entry_range(key_index: u8) -> std::ops::Range<usize> {
+    let slot = key_index as usize % KEYMATRIX_ENTRIES_PER_PAGE;
+    let start = slot * 4;
+    start..start + 4
+}
+
+fn describe_keymap_entry(profile: u8, key_index: u8, response: &[u8]) -> Result<String> {
+    let page = keymap_page_for_index(key_index);
+    let range = keymap_entry_range(key_index);
+    if response.len() < range.end {
+        bail!(
+            "keymap page response too short for key_index {} on page {}: got {} bytes, need {}",
+            key_index,
+            page,
+            response.len(),
+            range.end
+        );
+    }
+
+    let config = &response[range.clone()];
+    Ok(format!(
+        "profile={} page={} key_index={} config={:02X} {:02X} {:02X} {:02X}",
+        profile, page, key_index, config[0], config[1], config[2], config[3]
+    ))
+}
+
 pub trait DriverTransport {
     fn send_msg(
         &mut self,
@@ -98,12 +130,22 @@ pub async fn execute_command<T: DriverTransport>(
         None
     };
 
+    let detail = match (command, response.as_ref()) {
+        (
+            Commands::Keymap {
+                command: KeymapCommands::Get { profile, key_index },
+            },
+            Some(response),
+        ) => Some(describe_keymap_entry(*profile, *key_index, response)?),
+        _ => None,
+    };
+
     Ok(CommandExecution {
         operation: plan.operation,
         request: plan.request,
         checksum: plan.checksum.map(checksum_name).map(ToString::to_string),
         response,
-        detail: None,
+        detail,
     })
 }
 
@@ -225,7 +267,13 @@ pub fn build_command_request(
         Commands::Keymap { command } => match command {
             KeymapCommands::Get { profile, key_index } => Ok(CommandRequestPlan {
                 operation: "keymap get".to_string(),
-                request: Some(vec![table.get_keymatrix, *profile, *key_index, 0, 0]),
+                request: Some(vec![
+                    table.get_keymatrix,
+                    *profile,
+                    0xFF,
+                    keymap_page_for_index(*key_index),
+                    0,
+                ]),
                 checksum: Some(CheckSumType::Bit7 as i32),
                 expects_read: true,
             }),

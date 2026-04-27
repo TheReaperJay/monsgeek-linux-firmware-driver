@@ -64,6 +64,18 @@ impl CommandController {
         result
     }
 
+    pub(crate) fn query_raw(
+        &mut self,
+        cmd: u8,
+        data: &[u8],
+        checksum: ChecksumType,
+    ) -> Result<[u8; 64], TransportError> {
+        self.enforce_inter_command_delay();
+        let result = flow_control::query_raw(&self.session, cmd, data, checksum);
+        self.last_command_at = Instant::now();
+        result
+    }
+
     pub(crate) fn read_feature_report(&mut self) -> Result<[u8; 64], TransportError> {
         self.enforce_inter_command_delay();
         let result = self.session.vendor_get_report();

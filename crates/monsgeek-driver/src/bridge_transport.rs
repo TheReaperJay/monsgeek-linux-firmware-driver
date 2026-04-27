@@ -14,6 +14,12 @@ pub trait BridgeTransport: Send + Sync {
         data: &[u8],
         checksum: ChecksumType,
     ) -> Result<[u8; 64], TransportError>;
+    fn query_raw(
+        &self,
+        cmd: u8,
+        data: &[u8],
+        checksum: ChecksumType,
+    ) -> Result<[u8; 64], TransportError>;
     fn read_feature_report(&self) -> Result<[u8; 64], TransportError>;
 }
 
@@ -34,6 +40,15 @@ impl BridgeTransport for TransportHandle {
         checksum: ChecksumType,
     ) -> Result<[u8; 64], TransportError> {
         TransportHandle::query_command(self, cmd, data, checksum)
+    }
+
+    fn query_raw(
+        &self,
+        cmd: u8,
+        data: &[u8],
+        checksum: ChecksumType,
+    ) -> Result<[u8; 64], TransportError> {
+        TransportHandle::query_raw(self, cmd, data, checksum)
     }
 
     fn read_feature_report(&self) -> Result<[u8; 64], TransportError> {
@@ -78,6 +93,14 @@ pub async fn query_command(
     query_command_with(handle, data, checksum).await
 }
 
+pub async fn query_raw_command(
+    handle: TransportHandle,
+    data: Vec<u8>,
+    checksum: ChecksumType,
+) -> Result<Vec<u8>, String> {
+    query_raw_command_with(handle, data, checksum).await
+}
+
 pub async fn query_command_with<T>(
     handle: T,
     data: Vec<u8>,
@@ -94,6 +117,28 @@ where
     let payload = data[1..].to_vec();
 
     tokio::task::spawn_blocking(move || handle.query_command(cmd, &payload, checksum))
+        .await
+        .map_err(|e| format!("transport task join failed: {e}"))?
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| e.to_string())
+}
+
+pub async fn query_raw_command_with<T>(
+    handle: T,
+    data: Vec<u8>,
+    checksum: ChecksumType,
+) -> Result<Vec<u8>, String>
+where
+    T: BridgeTransport + 'static,
+{
+    if data.is_empty() {
+        return Err("empty command data".to_string());
+    }
+
+    let cmd = data[0];
+    let payload = data[1..].to_vec();
+
+    tokio::task::spawn_blocking(move || handle.query_raw(cmd, &payload, checksum))
         .await
         .map_err(|e| format!("transport task join failed: {e}"))?
         .map(|bytes| bytes.to_vec())

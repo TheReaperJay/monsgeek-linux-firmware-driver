@@ -41,6 +41,8 @@ pub(crate) struct CommandRequest {
 pub(crate) enum CommandMode {
     /// Send command and read echo-matched response.
     Query,
+    /// Send command and read the first response without echo validation.
+    QueryRaw,
     /// Send command without reading a response.
     Send,
     /// Read one pending feature report response.
@@ -147,6 +149,9 @@ fn transport_loop(
 fn handle_command(req: CommandRequest, controller: &mut CommandController) {
     let result = match req.mode {
         CommandMode::Query => controller.query(req.cmd, &req.data, req.checksum).map(Some),
+        CommandMode::QueryRaw => controller
+            .query_raw(req.cmd, &req.data, req.checksum)
+            .map(Some),
         CommandMode::Send => controller
             .send(req.cmd, &req.data, req.checksum)
             .map(|()| None),

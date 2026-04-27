@@ -358,6 +358,79 @@ async fn smoke_command_framing_with_stubbed_transport() {
 }
 
 #[test]
+fn keymap_get_builds_page_query_with_magic_ff() {
+    let registry = load_registry();
+    let definition = registry
+        .find_by_id(1308)
+        .expect("m5w definition exists")
+        .clone();
+
+    let plan = commands::build_command_request(
+        &Commands::Keymap {
+            command: monsgeek_cli::KeymapCommands::Get {
+                profile: 0,
+                key_index: 17,
+            },
+        },
+        &definition,
+        false,
+    )
+    .expect("keymap get should build request");
+
+    assert_eq!(
+        plan.request.expect("keymap request"),
+        vec![definition.commands().get_keymatrix, 0, 0xFF, 1, 0]
+    );
+}
+
+#[tokio::test]
+async fn keymap_get_decodes_selected_entry_from_page_response() {
+    let registry = load_registry();
+    let definition = registry
+        .find_by_id(1308)
+        .expect("m5w definition exists")
+        .clone();
+    let init = fixture_init(&[("path-m5w", &definition)]);
+    let online = device_select::supported_online_devices(&init, &registry);
+    let target = device_select::resolve_target_device(
+        device_select::SelectorOptions::default(),
+        &online,
+        &registry,
+    )
+    .expect("single device should resolve");
+
+    let mut page = vec![0u8; 64];
+    page[4..8].copy_from_slice(&[0x00, 0x00, 0xE3, 0x00]);
+    let mut stub = StubTransport {
+        sends: Vec::new(),
+        read_payload: page,
+    };
+
+    let result = commands::execute_command(
+        &mut stub,
+        &target,
+        &Commands::Keymap {
+            command: monsgeek_cli::KeymapCommands::Get {
+                profile: 0,
+                key_index: 17,
+            },
+        },
+        false,
+    )
+    .await
+    .expect("keymap get execution should succeed");
+
+    assert_eq!(
+        stub.sends[0].1,
+        vec![definition.commands().get_keymatrix, 0, 0xFF, 1, 0]
+    );
+    assert_eq!(
+        result.detail.as_deref(),
+        Some("profile=0 page=1 key_index=17 config=00 00 E3 00")
+    );
+}
+
+#[test]
 fn info_mapping_uses_get_usb_version_byte() {
     let registry = load_registry();
     let definition = registry

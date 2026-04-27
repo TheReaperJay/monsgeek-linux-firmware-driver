@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use monsgeek_inputd::uinput_device::create_uinput_device;
+use monsgeek_inputd::uinput_device::{VirtualKeyboardIdentity, create_uinput_device};
 use monsgeek_protocol::DeviceRegistry;
 use monsgeek_transport::input::InputProcessor;
 use monsgeek_transport::usb::{SessionMode, UsbSession};
@@ -141,7 +141,10 @@ fn test_uinput_device_creation() {
     let _lock = HW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     simple_logger::init_with_level(log::Level::Debug).ok();
 
-    let device = create_uinput_device("test-monsgeek-inputd");
+    let device = create_uinput_device(
+        "test-monsgeek-inputd",
+        VirtualKeyboardIdentity::new(0x3151, 0x4015),
+    );
     assert!(
         device.is_ok(),
         "Failed to create uinput device: {:?}",

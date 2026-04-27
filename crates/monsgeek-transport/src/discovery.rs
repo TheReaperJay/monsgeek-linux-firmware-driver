@@ -139,10 +139,16 @@ pub fn find_devices_no_probe(registry: &DeviceRegistry) -> Result<Vec<DeviceInfo
         let definition = matches
             .iter()
             .copied()
-            .find(|device| device.pid == candidate.pid)
-            .or_else(|| matches.iter().copied().min_by_key(|device| device.id))
+            .min_by_key(|device| (device.pid != candidate.pid, device.id))
             .expect("matches is non-empty");
-        found.push(device_info_from_definition(definition, &candidate));
+        let mut info = device_info_from_definition(definition, &candidate);
+
+        if matches.len() > 1 {
+            info.name = format!("descriptor_only_{:04x}_{:04x}", candidate.vid, candidate.pid);
+            info.display_name = "Keyboard".to_string();
+        }
+
+        found.push(info);
     }
 
     dedup_found(&mut found);

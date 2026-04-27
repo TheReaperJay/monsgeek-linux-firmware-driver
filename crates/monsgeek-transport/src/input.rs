@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::keymap::{HID_TO_LINUX, MODIFIER_KEYCODES};
@@ -12,6 +11,16 @@ pub struct KeyAction {
     pub value: i32,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputProcessorMetrics {
+    pub reports_total: u64,
+    pub reports_short: u64,
+    pub key_actions_emitted: u64,
+    pub debounce_suppressed: u64,
+    pub duplicate_prev_skipped: u64,
+    pub duplicate_current_skipped: u64,
+}
+
 /// Pure HID report processor with state tracking and software debounce.
 ///
 /// Translates 8-byte boot protocol HID reports into key press/release actions.
@@ -21,7 +30,8 @@ pub struct InputProcessor {
     prev_modifiers: u8,
     prev_keys: [u8; 6],
     debounce_ms: u64,
-    release_times: HashMap<u8, Instant>,
+    release_times: [Option<Instant>; 256],
+    metrics: InputProcessorMetrics,
 }
 
 impl InputProcessor {
@@ -30,7 +40,8 @@ impl InputProcessor {
             prev_modifiers: 0,
             prev_keys: [0; 6],
             debounce_ms,
-            release_times: HashMap::new(),
+            release_times: [None; 256],
+            metrics: InputProcessorMetrics::default(),
         }
     }
 
@@ -42,7 +53,9 @@ impl InputProcessor {
     /// Process an 8-byte boot protocol HID report with an explicit timestamp.
     /// Enables deterministic debounce testing without sleeping.
     pub fn process_report_at(&mut self, report: &[u8], now: Instant) -> Vec<KeyAction> {
+        self.metrics.reports_total += 1;
         if report.len() < 8 {
+            self.metrics.reports_short += 1;
             return Vec::new();
         }
 
@@ -52,6 +65,8 @@ impl InputProcessor {
         ];
 
         let mut actions = Vec::new();
+        let mut seen_prev = [false; 256];
+        let mut seen_current = [false; 256];
 
         // Process modifier releases (emit before presses for correct ordering)
         for bit in 0..8u8 {
@@ -84,13 +99,18 @@ impl InputProcessor {
             if prev_hid == 0 {
                 continue;
             }
+            if seen_prev[prev_hid as usize] {
+                self.metrics.duplicate_prev_skipped += 1;
+                continue;
+            }
+            seen_prev[prev_hid as usize] = true;
             if !keys.contains(&prev_hid) {
                 let keycode = HID_TO_LINUX[prev_hid as usize];
                 if keycode != 0 {
                     log::trace!("key release: HID {:#04X} -> keycode {}", prev_hid, keycode);
                     actions.push(KeyAction { keycode, value: 0 });
                 }
-                self.release_times.insert(prev_hid, now);
+                self.release_times[prev_hid as usize] = Some(now);
             }
         }
 
@@ -101,6 +121,11 @@ impl InputProcessor {
             if hid == 0 {
                 continue;
             }
+            if seen_current[hid as usize] {
+                self.metrics.duplicate_current_skipped += 1;
+                continue;
+            }
+            seen_current[hid as usize] = true;
 
             if self.prev_keys.contains(&hid) {
                 // Key was already held, carry forward
@@ -117,7 +142,7 @@ impl InputProcessor {
             }
 
             if self.debounce_ms > 0 {
-                if let Some(&release_time) = self.release_times.get(&hid) {
+                if let Some(release_time) = self.release_times[hid as usize] {
                     let elapsed = now.duration_since(release_time);
                     if elapsed.as_millis() < self.debounce_ms as u128 {
                         log::debug!(
@@ -125,6 +150,7 @@ impl InputProcessor {
                             keycode,
                             elapsed.as_millis()
                         );
+                        self.metrics.debounce_suppressed += 1;
                         // Do NOT add to new_prev_keys so next report re-checks debounce
                         continue;
                     }
@@ -138,20 +164,33 @@ impl InputProcessor {
 
         self.prev_modifiers = modifiers;
         self.prev_keys = new_prev_keys;
+        self.metrics.key_actions_emitted += actions.len() as u64;
 
         actions
+    }
+
+    /// Returns current metrics and resets window counters.
+    pub fn take_metrics(&mut self) -> InputProcessorMetrics {
+        let snapshot = self.metrics;
+        self.metrics = InputProcessorMetrics::default();
+        snapshot
     }
 
     /// Release all currently tracked keys and modifiers.
     /// Returns release KeyActions for every held key and modifier, then resets state.
     pub fn release_all_keys(&mut self) -> Vec<KeyAction> {
         let mut actions = Vec::new();
+        let mut seen_prev = [false; 256];
 
         // Release all held regular keys
         for &hid in &self.prev_keys {
             if hid == 0 {
                 continue;
             }
+            if seen_prev[hid as usize] {
+                continue;
+            }
+            seen_prev[hid as usize] = true;
             let keycode = HID_TO_LINUX[hid as usize];
             if keycode != 0 {
                 log::trace!("release_all: keycode {}", keycode);
@@ -170,7 +209,7 @@ impl InputProcessor {
 
         self.prev_modifiers = 0;
         self.prev_keys = [0; 6];
-        self.release_times.clear();
+        self.release_times = [None; 256];
 
         actions
     }
@@ -494,5 +533,34 @@ mod tests {
         let actions = proc.process_report(&short_report);
 
         assert!(actions.is_empty(), "Short report should produce no events");
+    }
+
+    // Test 15: Duplicate HID code in one report should emit one press.
+    #[test]
+    fn test_duplicate_hid_in_report_emits_single_press() {
+        let mut proc = InputProcessor::new(0);
+        let report = [0x00, 0x00, 0x2C, 0x2C, 0, 0, 0, 0]; // duplicated SPACE
+        let actions = proc.process_report(&report);
+
+        assert_eq!(actions.len(), 1, "Expected one action for duplicated HID");
+        assert_eq!(actions[0].keycode, 57, "Expected KEY_SPACE (57)");
+        assert_eq!(actions[0].value, 1, "Expected press (1)");
+    }
+
+    // Test 16: Duplicate tracked key releases only once.
+    #[test]
+    fn test_duplicate_prev_key_releases_once() {
+        let mut proc = InputProcessor::new(0);
+        proc.prev_keys = [0x2C, 0x2C, 0, 0, 0, 0];
+        let release = [0x00, 0x00, 0, 0, 0, 0, 0, 0];
+        let actions = proc.process_report(&release);
+
+        assert_eq!(
+            actions.len(),
+            1,
+            "Expected one release for duplicated previous HID"
+        );
+        assert_eq!(actions[0].keycode, 57, "Expected KEY_SPACE (57)");
+        assert_eq!(actions[0].value, 0, "Expected release (0)");
     }
 }

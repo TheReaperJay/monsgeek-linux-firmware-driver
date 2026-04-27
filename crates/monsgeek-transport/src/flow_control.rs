@@ -2,6 +2,7 @@
 //!
 //! Wraps `UsbSession` to provide:
 //! - `query_command`: send + read with echo byte matching and retry (up to 5 attempts)
+//! - `query_raw`: send + read with retry, accepting the first response without echo validation
 //! - `send_command`: fire-and-forget with retry on USB error (up to 3 attempts)
 //!
 //! Both functions build the HID frame via `monsgeek_protocol::build_command` and
@@ -93,6 +94,68 @@ pub(crate) fn query_command(
         checksum,
         QueryExecutionOptions::regular(),
     )
+}
+
+/// Send a command and read the first response without echo-byte validation.
+///
+/// This matches the reference stack's `query_raw` behavior for page-based
+/// commands like `GET_KEYMATRIX` and `GET_FN`, where the reply body is raw
+/// page data rather than an echoed command frame.
+pub(crate) fn query_raw(
+    session: &UsbSession,
+    cmd_byte: u8,
+    data: &[u8],
+    checksum: ChecksumType,
+) -> Result<[u8; 64], TransportError> {
+    let frame = build_command(cmd_byte, data, checksum);
+    log::debug!(
+        "query_raw 0x{:02X} ({}) frame[1..10]={:02X?} checksum={:?} data_len={}",
+        cmd_byte,
+        cmd::name(cmd_byte),
+        &frame[1..10.min(frame.len())],
+        checksum,
+        data.len()
+    );
+    let mut last_err: Option<TransportError> = None;
+
+    for attempt in 0..timing::QUERY_RETRIES {
+        if let Err(err) = session.vendor_set_report(&frame[1..]) {
+            log::warn!(
+                "Raw query attempt {} for 0x{:02X} ({}) send failed: {}",
+                attempt + 1,
+                cmd_byte,
+                cmd::name(cmd_byte),
+                err
+            );
+            last_err = Some(err);
+            if attempt + 1 < timing::QUERY_RETRIES {
+                std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
+                continue;
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
+        match session.vendor_get_report() {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                log::warn!(
+                    "Raw query attempt {} for 0x{:02X} ({}) read failed: {}",
+                    attempt + 1,
+                    cmd_byte,
+                    cmd::name(cmd_byte),
+                    err
+                );
+                last_err = Some(err);
+                if attempt + 1 < timing::QUERY_RETRIES {
+                    std::thread::sleep(Duration::from_millis(timing::DEFAULT_DELAY_MS));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or(TransportError::Timeout { cmd: cmd_byte }))
 }
 
 /// Discovery variant of [`query_command`] with bounded retries and no dongle
@@ -523,6 +586,16 @@ mod tests {
             &[u8],
             monsgeek_protocol::ChecksumType,
         ) -> Result<[u8; 64], crate::error::TransportError> = query_command;
+    }
+
+    #[test]
+    fn test_query_raw_exists_with_correct_signature() {
+        let _fn_ptr: fn(
+            &crate::usb::UsbSession,
+            u8,
+            &[u8],
+            monsgeek_protocol::ChecksumType,
+        ) -> Result<[u8; 64], crate::error::TransportError> = query_raw;
     }
 
     #[test]

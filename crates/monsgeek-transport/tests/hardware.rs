@@ -445,19 +445,13 @@ fn test_get_keymatrix_profile_0() {
     let (handle, _events) = connect(m5w).expect("failed to connect to M5W");
 
     let commands = m5w.commands();
-    // GET_KEYMATRIX query payload: [profile=0, magic=0, page=0, magnetism_profile=0]
+    // GET_KEYMATRIX query payload: [profile=0, magic=0xFF, page=0, magnetism_profile=0]
     let response = handle
-        .send_query(commands.get_keymatrix, &[0, 0, 0, 0], ChecksumType::Bit7)
+        .query_raw(commands.get_keymatrix, &[0, 0xFF, 0, 0], ChecksumType::Bit7)
         .expect("GET_KEYMATRIX query failed");
 
-    assert_eq!(
-        response[0], commands.get_keymatrix,
-        "echo byte mismatch for GET_KEYMATRIX: expected 0x{:02X}, got 0x{:02X}",
-        commands.get_keymatrix, response[0]
-    );
-
-    // Response should contain key mapping data (not all zeros after echo byte)
-    let payload_has_data = response[1..32].iter().any(|&b| b != 0);
+    // Response should contain key mapping data (raw page bytes, no echoed command byte).
+    let payload_has_data = response[..32].iter().any(|&b| b != 0);
     println!(
         "GET_KEYMATRIX profile 0 response (first 32 bytes): {:02X?}",
         &response[..32]
@@ -584,13 +578,8 @@ fn test_set_keymatrix_roundtrip_dangerous() {
 
     // Read current key mapping for profile 0, page 0
     let original_page = handle
-        .send_query(commands.get_keymatrix, &[0, 0, 0, 0], ChecksumType::Bit7)
+        .query_raw(commands.get_keymatrix, &[0, 0xFF, 0, 0], ChecksumType::Bit7)
         .expect("GET_KEYMATRIX profile 0 page 0 failed");
-
-    assert_eq!(
-        original_page[0], commands.get_keymatrix,
-        "GET_KEYMATRIX echo mismatch"
-    );
 
     println!(
         "Original key mapping page 0 (first 16 bytes): {:02X?}",
@@ -622,7 +611,7 @@ fn test_set_keymatrix_roundtrip_dangerous() {
 
         // Read back to verify the write took effect
         let verify_page = handle
-            .send_query(commands.get_keymatrix, &[0, 0, 0, 0], ChecksumType::Bit7)
+            .query_raw(commands.get_keymatrix, &[0, 0xFF, 0, 0], ChecksumType::Bit7)
             .map_err(|e| format!("GET_KEYMATRIX after set failed: {e}"))?;
 
         println!(

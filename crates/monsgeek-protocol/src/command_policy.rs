@@ -5,7 +5,7 @@
 //! execute the returned decision (forward to transport, synthesize read token,
 //! and/or surface an error).
 
-use crate::{DeviceDefinition, cmd};
+use crate::{cmd, DeviceDefinition};
 
 const MAX_MACRO_INDEX: u8 = 49;
 const MAX_CHUNK_PAGE: u8 = 9;
@@ -492,6 +492,7 @@ pub fn normalize_outbound_command(definition: &DeviceDefinition, mut msg: Vec<u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ControlTransport;
 
     fn make_test_definition() -> DeviceDefinition {
         DeviceDefinition {
@@ -572,10 +573,9 @@ mod tests {
         let decision = evaluate_outbound_command(&def, &msg);
         let err = decision.error.expect("expected policy error");
         assert_eq!(err.code, CommandPolicyErrorCode::FailedPrecondition);
-        assert!(
-            err.message
-                .contains("missing required registry field: layer")
-        );
+        assert!(err
+            .message
+            .contains("missing required registry field: layer"));
     }
 
     #[test]
@@ -585,10 +585,9 @@ mod tests {
         let decision = evaluate_outbound_command(&def, &msg);
         let err = decision.error.expect("expected policy error");
         assert_eq!(err.code, CommandPolicyErrorCode::FailedPrecondition);
-        assert!(
-            err.message
-                .contains("missing required registry field: fnSysLayer")
-        );
+        assert!(err
+            .message
+            .contains("missing required registry field: fnSysLayer"));
     }
 
     #[test]

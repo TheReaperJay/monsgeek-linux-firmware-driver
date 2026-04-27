@@ -210,6 +210,31 @@ impl TransportHandle {
         result.map(|opt| opt.expect("query response must be Some"))
     }
 
+    /// Send a command and return the first response without echo validation.
+    pub fn query_raw(
+        &self,
+        cmd: u8,
+        data: &[u8],
+        checksum: ChecksumType,
+    ) -> Result<[u8; 64], TransportError> {
+        let (response_tx, response_rx) = bounded(1);
+        self.cmd_tx
+            .send(thread::CommandRequest {
+                cmd,
+                data: data.to_vec(),
+                checksum,
+                mode: thread::CommandMode::QueryRaw,
+                response_tx,
+            })
+            .map_err(|_| TransportError::ChannelClosed)?;
+
+        let result = response_rx
+            .recv()
+            .map_err(|_| TransportError::ChannelClosed)?;
+
+        result.map(|opt| opt.expect("raw query response must be Some"))
+    }
+
     /// Read a single 64-byte feature-report response from the connected device.
     ///
     /// This supports split send/read RPC semantics used by the gRPC bridge.
@@ -465,6 +490,14 @@ mod tests {
         }
         // We can't call it without hardware, but the function compiles.
         let _ = check_send_query as fn(&TransportHandle) -> Result<[u8; 64], TransportError>;
+    }
+
+    #[test]
+    fn test_transport_handle_query_raw_signature() {
+        fn check_query_raw(handle: &TransportHandle) -> Result<[u8; 64], TransportError> {
+            handle.query_raw(0x89, &[0, 0xFF, 0, 0], ChecksumType::Bit7)
+        }
+        let _ = check_query_raw as fn(&TransportHandle) -> Result<[u8; 64], TransportError>;
     }
 
     #[test]

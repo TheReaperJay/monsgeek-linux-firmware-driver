@@ -12,7 +12,7 @@ use std::time::Duration;
 use futures::Stream;
 use futures::stream::{self, StreamExt};
 use monsgeek_protocol::{
-    ChecksumType, CommandClass, CommandDispatchPolicy, CommandPolicyError, CommandPolicyErrorCode,
+    ChecksumType, CommandDispatchPolicy, CommandPolicyError, CommandPolicyErrorCode,
     CommandReadPolicy, DeviceDefinition, DeviceRegistry, evaluate_outbound_command,
     normalize_outbound_command,
 };
@@ -512,21 +512,6 @@ impl DriverService {
         self.enqueue_synthetic_response(path, Vec::new());
     }
 
-    fn enqueue_synthetic_empty_read_for_aliases(&self, requested_path: &str, canonical_path: &str) {
-        self.enqueue_synthetic_empty_read(requested_path);
-        let _ = canonical_path;
-    }
-
-    fn enqueue_synthetic_response_for_aliases(
-        &self,
-        requested_path: &str,
-        canonical_path: &str,
-        response: Vec<u8>,
-    ) {
-        let _ = canonical_path;
-        self.enqueue_synthetic_response(requested_path, response);
-    }
-
     fn pop_synthetic_response(&self, path: &str) -> Option<Vec<u8>> {
         let mut synthetic_reads = self
             .synthetic_reads
@@ -558,7 +543,7 @@ impl DriverService {
         let decision = evaluate_outbound_command(&definition, &msg);
         if decision.read_policy == CommandReadPolicy::SyntheticEmptyRead {
             // Preserve send/read pairing for clients that always call read after send.
-            self.enqueue_synthetic_empty_read_for_aliases(path, &canonical_path);
+            self.enqueue_synthetic_empty_read(path);
         }
 
         if let Some(error) = decision.error.as_ref() {
@@ -584,14 +569,6 @@ impl DriverService {
         }
 
         let msg = normalize_outbound_command(&definition, msg);
-        if decision.class == CommandClass::Query {
-            let response = bridge_transport::query_command(handle, msg, checksum)
-                .await
-                .map_err(Status::internal)?;
-            self.enqueue_synthetic_response_for_aliases(path, &canonical_path, response);
-            return Ok(());
-        }
-
         bridge_transport::send_command(handle, msg, checksum)
             .await
             .map_err(Status::internal)
